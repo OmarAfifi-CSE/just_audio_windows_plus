@@ -1,0 +1,32 @@
+name: just_audio_windows_plus
+description: Thread-safe Windows platform implementation of just_audio using WinRT MediaPlayer. Fixes multi-threading race conditions and 0xC0000005 crashes.
+version: 0.1.0
+homepage: https://github.com/OmarAfifi-CSE/just_audio_windows_plus
+repository: https://github.com/OmarAfifi-CSE/just_audio_windows_plus
+issue_tracker: https://github.com/OmarAfifi-CSE/just_audio_windows_plus/issues
+
+topics:
+  - audio
+  - windows
+  - just-audio
+  - media-player
+
+environment:
+  sdk: ^3.0.0
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  plugin:
+    implements: just_audio
+    platforms:
+      windows:
+        pluginClass: JustAudioWindowsPlusPlugin

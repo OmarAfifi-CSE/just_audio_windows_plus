@@ -11,6 +11,33 @@
 
 Play internet audio streams, local audio files, sound effects, and gapless playlists effortlessly in your Flutter desktop applications. Powered by native Windows Media Foundation (`WinRT Windows.Media.Playback.MediaPlayer`) and modern C++20, `just_audio_windows_plus` gives you a fast, reliable, and production-grade audio experience right out of the box.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/OmarAfifi-CSE/just_audio_windows_plus/main/screenshots/desktop_player_showcase.png" alt="just_audio_windows_plus Showcase" width="720"/>
+</p>
+
+---
+
+## 📋 Windows Platform Feature Matrix
+
+| Feature | Windows Support | Notes / Underlying Architecture |
+|---|:---:|---|
+| **Audio from URL** | ✅ | HTTP / HTTPS progressive streams |
+| **Audio from File** | ✅ | Absolute local disk paths with Unicode handling |
+| **Audio from Asset** | ✅ | Flutter bundled package assets |
+| **HLS Streams (`.m3u8`)** | ✅ | Native Media Foundation HLS tag support |
+| **DASH Streams (`.mpd`)** | ✅ | Windows native DASH profile playback |
+| **Gapless Playlists** | ✅ | Native `MediaPlaybackList` with zero transition delay |
+| **Play / Pause / Seek** | ✅ | Frame-accurate seeking with reactive position stream |
+| **Buffering Progress** | ✅ | Real-time `bufferingProgress` event stream |
+| **Variable Playback Speed** | ✅ | 0.5x to 2.0x pitch-corrected playback |
+| **Volume Adjustment** | ✅ | 0.0 (silent) to 1.0 (full scale) |
+| **Looping & Shuffling** | ✅ | `LoopMode.off`, `one`, `all` & custom shuffle algorithms |
+| **Error Handling** | ✅ | Structured `PlayerException` mapped from WinRT HRESULT |
+| **UI Platform Thread Safety** | ✅ | **Exclusive to Plus**: Marshals to UI thread (`HWND_MESSAGE`) |
+| **Modern C++20 Toolchain** | ✅ | **Exclusive to Plus**: Seamless MSVC 14.40+ / VS 2026 build |
+| **Atomic Player Lifecycle** | ✅ | **Exclusive to Plus**: Zero `0xC0000005` access violations |
+| **Clean SMTC Separation** | ✅ | **Exclusive to Plus**: Conflict-free with `audio_service` |
+
 ---
 
 ## ⚡ 30-Second Quickstart
@@ -55,7 +82,7 @@ Add `just_audio_windows_plus` alongside `just_audio` in your `pubspec.yaml`:
 dependencies:
   flutter:
     sdk: flutter
-  just_audio: ^0.9.44
+  just_audio: ^0.10.6 # Full compatibility with ^0.10.x and ^0.9.x
   just_audio_windows_plus: ^0.2.0
 ```
 
@@ -79,15 +106,12 @@ dependency_overrides:
 Easily queue multiple tracks, navigate between recordings, and listen for index changes:
 
 ```dart
-final playlist = ConcatenatingAudioSource(
-  children: [
-    AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/001.mp3')),
-    AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/112.mp3')),
-    AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/113.mp3')),
-  ],
-);
-
-await player.setAudioSource(playlist);
+// Works natively with modern just_audio 0.10.x setAudioSources
+await player.setAudioSources([
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/001.mp3')),
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/112.mp3')),
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/113.mp3')),
+]);
 await player.play();
 
 // Smoothly skip tracks without UI stutter

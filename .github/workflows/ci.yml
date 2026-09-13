@@ -40,5 +40,8 @@ jobs:
           cd example
           flutter analyze --fatal-infos
 
+      - name: Clean working tree before publish validation
+        run: git checkout -- .
+
       - name: Validate dry-run publish
         run: dart pub publish --dry-run

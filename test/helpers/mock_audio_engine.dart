@@ -267,10 +267,14 @@ class MockAudioEngine {
           final to = args['newIndex'] as int?;
           if (from != null &&
               to != null &&
+              from >= 0 &&
+              to >= 0 &&
               from < player.playlist.length &&
-              to <= player.playlist.length) {
-            final item = player.playlist.removeAt(from);
-            player.playlist.insert(to, item);
+              to < player.playlist.length) {
+            if (from != to) {
+              final item = player.playlist.removeAt(from);
+              player.playlist.insert(to, item);
+            }
             return <String, dynamic>{};
           } else {
             throw PlatformException(

@@ -4,14 +4,14 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+*'
+      - 'v*'
   workflow_dispatch:
 
 jobs:
-  publish:
-    name: Release & Publish
+  release:
+    name: Create GitHub Release
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: write
 
     steps:
@@ -62,5 +62,9 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Publish to pub.dev
-        run: dart pub publish --force
+  publish:
+    name: Publish to pub.dev
+    needs: release
+    permissions:
+      id-token: write
+    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1

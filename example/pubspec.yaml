@@ -10,7 +10,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  just_audio: ^0.9.44
+  just_audio: ^0.10.6
   just_audio_windows_plus:
     path: ../
 

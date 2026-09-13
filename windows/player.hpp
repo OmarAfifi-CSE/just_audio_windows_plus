@@ -35,8 +35,13 @@
 #define JAW_TRACE(expr) do { } while (0)
 #endif
 
-#define TO_MILLISECONDS(timespan) (timespan.count() / 10000)
-#define TO_MICROSECONDS(timespan) (TO_MILLISECONDS(timespan) * 1000)
+inline int64_t TimeSpanToMicroseconds(TimeSpan timespan) {
+  return timespan.count() / 10;
+}
+
+inline int64_t TimeSpanToMilliseconds(TimeSpan timespan) {
+  return timespan.count() / 10000;
+}
 
 using flutter::EncodableMap;
 using flutter::EncodableValue;
@@ -56,13 +61,27 @@ const EncodableValue* ValueOrNull(const EncodableMap& map, const char* key) {
   return &(it->second);
 }
 
+// Safely extracts int64_t from an EncodableValue whether Dart sent int32_t or int64_t
+inline bool TryGetInt64(const EncodableValue* val, int64_t& out) {
+  if (!val) return false;
+  if (const auto* i32 = std::get_if<int32_t>(val)) {
+    out = *i32;
+    return true;
+  }
+  if (const auto* i64 = std::get_if<int64_t>(val)) {
+    out = *i64;
+    return true;
+  }
+  return false;
+}
+
 // Converts a std::string to std::wstring
 inline std::wstring TO_WIDESTRING(const std::string& string) {
   if (string.empty()) {
     return std::wstring();
   }
   int32_t target_length =
-    ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, string.data(),
+    ::MultiByteToWideChar(CP_UTF8, 0, string.data(),
       static_cast<int32_t>(string.length()), nullptr, 0);
   if (target_length == 0) {
     return std::wstring();
@@ -70,7 +89,7 @@ inline std::wstring TO_WIDESTRING(const std::string& string) {
   std::wstring utf16_string;
   utf16_string.resize(target_length);
   int32_t converted_length =
-    ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, string.data(),
+    ::MultiByteToWideChar(CP_UTF8, 0, string.data(),
       static_cast<int32_t>(string.length()),
       utf16_string.data(), target_length);
   if (converted_length == 0) {
@@ -84,10 +103,11 @@ public:
   JustAudioEventSink(JustAudioEventSink const&) = delete;
   JustAudioEventSink& operator=(JustAudioEventSink const&) = delete;
 
-  JustAudioEventSink(flutter::BinaryMessenger* messenger, const std::string& id) {
+  JustAudioEventSink(flutter::BinaryMessenger* messenger, const std::string& id)
+      : messenger_(messenger), id_(id) {
     auto event_channel =
       std::make_unique<flutter::EventChannel<flutter::EncodableValue>>(
-        messenger, id, &flutter::StandardMethodCodec::GetInstance());
+        messenger_, id_, &flutter::StandardMethodCodec::GetInstance());
 
     auto event_handler = std::make_unique<flutter::StreamHandlerFunctions<>>(
       [this](const EncodableValue* arguments, std::unique_ptr<flutter::EventSink<>>&& events) -> std::unique_ptr<flutter::StreamHandlerError<>> {
@@ -102,6 +122,14 @@ public:
       });
 
     event_channel->SetStreamHandler(std::move(event_handler));
+  }
+
+  ~JustAudioEventSink() {
+    std::lock_guard<std::mutex> lock(sink_mutex_);
+    sink.reset();
+    if (messenger_) {
+      messenger_->SetMessageHandler(id_, nullptr);
+    }
   }
 
   void Success(const EncodableValue& event) {
@@ -123,6 +151,8 @@ public:
   }
 
 private:
+  flutter::BinaryMessenger* messenger_ = nullptr;
+  std::string id_;
   std::mutex sink_mutex_;
   std::unique_ptr<flutter::EventSink<>> sink = nullptr;
 };
@@ -136,8 +166,6 @@ private:
   // WinRT reports MediaPlaybackState::None while a source is being swapped in.
   // Mapping None to idle mid-load causes just_audio to abort loading in flight.
   bool source_set_ = false;
-
-  bool buffering_progress_warned_ = false;
 
   // Marshals WinRT callbacks to the Flutter platform thread.
   std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
@@ -160,9 +188,17 @@ private:
 
   // Tokens for event unsubscription
   winrt::event_token playback_state_token_{};
+  winrt::event_token natural_duration_token_{};
   winrt::event_token media_failed_token_{};
+  winrt::event_token media_ended_token_{};
   winrt::event_token item_changed_token_{};
   winrt::event_token item_failed_token_{};
+
+  // Mutex to serialize broadcastState across platform and WinRT background worker threads
+  std::mutex broadcast_mutex_;
+
+  int loop_mode_ = 0;
+  int shuffle_mode_ = 0;
 
 public:
   std::string id;
@@ -182,11 +218,17 @@ public:
     // Immediately invalidate pending platform thread callbacks
     life_.reset();
 
+    std::lock_guard<std::mutex> lock(broadcast_mutex_);
+
     try {
       auto session = mediaPlayer.PlaybackSession();
       if (playback_state_token_) {
         session.PlaybackStateChanged(playback_state_token_);
         playback_state_token_ = {};
+      }
+      if (natural_duration_token_) {
+        session.NaturalDurationChanged(natural_duration_token_);
+        natural_duration_token_ = {};
       }
     } catch (...) {}
 
@@ -194,6 +236,13 @@ public:
       if (media_failed_token_) {
         mediaPlayer.MediaFailed(media_failed_token_);
         media_failed_token_ = {};
+      }
+    } catch (...) {}
+
+    try {
+      if (media_ended_token_) {
+        mediaPlayer.MediaEnded(media_ended_token_);
+        media_ended_token_ = {};
       }
     } catch (...) {}
 
@@ -248,7 +297,16 @@ public:
     // Set up event callbacks
     playback_state_token_ = mediaPlayer.PlaybackSession().PlaybackStateChanged([this](auto, const auto&) -> void {
       if (disposed_) return;
-      broadcastState();
+      try {
+        broadcastState();
+      } catch (...) {}
+    });
+
+    natural_duration_token_ = mediaPlayer.PlaybackSession().NaturalDurationChanged([this](auto, const auto&) -> void {
+      if (disposed_) return;
+      try {
+        broadcastState();
+      } catch (...) {}
     });
 
     media_failed_token_ = mediaPlayer.MediaFailed([this](auto, const Playback::MediaPlayerFailedEventArgs& args) -> void {
@@ -283,10 +341,19 @@ public:
       });
     });
 
+    media_ended_token_ = mediaPlayer.MediaEnded([this](auto, const auto&) -> void {
+      if (disposed_) return;
+      try {
+        broadcastState();
+      } catch (...) {}
+    });
+
     mediaPlaybackList.MaxPlayedItemsToKeepOpen(2);
     item_changed_token_ = mediaPlaybackList.CurrentItemChanged([this](auto, const auto&) -> void {
       if (disposed_) return;
-      broadcastState();
+      try {
+        broadcastState();
+      } catch (...) {}
     });
 
     item_failed_token_ = mediaPlaybackList.ItemFailed([this](auto, const Playback::MediaPlaybackItemFailedEventArgs& args) -> void {
@@ -342,20 +409,25 @@ public:
 
     if (method_call.method_name().compare("load") == 0) {
       const auto* audioSourceData = std::get_if<flutter::EncodableMap>(ValueOrNull(*args, "audioSource"));
-      const auto* initialPosition = std::get_if<int>(ValueOrNull(*args, "initialPosition"));
-      const auto* initialIndex = std::get_if<int>(ValueOrNull(*args, "initialIndex"));
+      if (!audioSourceData) {
+        return result->Error("load_error", "audioSource argument is missing or invalid");
+      }
+      int64_t initialPos = 0;
+      bool hasInitialPos = TryGetInt64(ValueOrNull(*args, "initialPosition"), initialPos);
+      int64_t initialIdx = 0;
+      bool hasInitialIdx = TryGetInt64(ValueOrNull(*args, "initialIndex"), initialIdx);
 
       source_set_ = true;
 
       try {
         loadSource(*audioSourceData);
 
-        if (initialIndex != nullptr) {
-          seekToItem(static_cast<uint32_t>(*initialIndex));
+        if (hasInitialIdx && initialIdx >= 0) {
+          seekToItem(static_cast<uint32_t>(initialIdx));
         }
 
-        if (initialPosition != nullptr) {
-          seekToPosition(*initialPosition);
+        if (hasInitialPos && (!hasInitialIdx || initialPos > 0)) {
+          seekToPosition(initialPos);
         }
       } catch (const winrt::hresult_error& error) {
         return result->Error("load_error", winrt::to_string(error.message()));
@@ -409,37 +481,47 @@ public:
     } else if (method_call.method_name().compare("setSkipSilence") == 0) {
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setLoopMode") == 0) {
-      const auto* loopMode = std::get_if<int>(ValueOrNull(*args, "loopMode"));
-      if (!disposed_ && loopMode) {
+      int64_t loopMode = 0;
+      if (!disposed_ && TryGetInt64(ValueOrNull(*args, "loopMode"), loopMode)) {
+        loop_mode_ = static_cast<int>(loopMode);
         try {
-          switch (*loopMode) {
+          bool hasList = false;
+          try {
+            if (mediaPlaybackList) {
+              auto items = mediaPlaybackList.Items();
+              hasList = items && items.Size() > 0;
+            }
+          } catch (...) {}
+
+          switch (loopMode) {
           case 0: // off
             mediaPlayer.IsLoopingEnabled(false);
-            mediaPlaybackList.AutoRepeatEnabled(false);
+            if (mediaPlaybackList) mediaPlaybackList.AutoRepeatEnabled(false);
             break;
           case 1: // one
             mediaPlayer.IsLoopingEnabled(true);
-            mediaPlaybackList.AutoRepeatEnabled(false);
+            if (mediaPlaybackList) mediaPlaybackList.AutoRepeatEnabled(false);
             break;
           case 2: // all
-            mediaPlayer.IsLoopingEnabled(false);
-            mediaPlaybackList.AutoRepeatEnabled(true);
+            if (hasList) {
+              mediaPlayer.IsLoopingEnabled(false);
+              mediaPlaybackList.AutoRepeatEnabled(true);
+            } else {
+              mediaPlayer.IsLoopingEnabled(true);
+              if (mediaPlaybackList) mediaPlaybackList.AutoRepeatEnabled(false);
+            }
             break;
           }
         } catch (...) {}
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setShuffleMode") == 0) {
-      const auto* shuffleMode = std::get_if<int>(ValueOrNull(*args, "shuffleMode"));
-      if (!disposed_ && shuffleMode) {
+      int64_t shuffleMode = 0;
+      if (!disposed_ && TryGetInt64(ValueOrNull(*args, "shuffleMode"), shuffleMode)) {
+        shuffle_mode_ = static_cast<int>(shuffleMode);
         try {
-          switch (*shuffleMode) {
-          case 0: // none
-            mediaPlaybackList.ShuffleEnabled(false);
-            break;
-          case 1: // all
-            mediaPlaybackList.ShuffleEnabled(true);
-            break;
+          if (mediaPlaybackList) {
+            mediaPlaybackList.ShuffleEnabled(shuffleMode == 1);
           }
         } catch (...) {}
       }
@@ -453,90 +535,118 @@ public:
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("seek") == 0) {
-      const auto* position = std::get_if<int>(ValueOrNull(*args, "position"));
-      const auto* index = std::get_if<int>(ValueOrNull(*args, "index"));
+      int64_t pos = 0;
+      bool hasPos = TryGetInt64(ValueOrNull(*args, "position"), pos);
+      int64_t idx = 0;
+      bool hasIdx = TryGetInt64(ValueOrNull(*args, "index"), idx);
 
       if (!disposed_) {
         try {
-          if (index != nullptr) {
-            seekToItem(static_cast<uint32_t>(*index));
+          if (hasIdx && idx >= 0) {
+            seekToItem(static_cast<uint32_t>(idx));
           }
-          if (position != nullptr) {
-            seekToPosition(*position);
+          if (hasPos) {
+            if (!hasIdx || pos > 0) {
+              seekToPosition(pos);
+            }
           }
         } catch (...) {}
       }
 
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("concatenatingInsertAll") == 0) {
-      const auto* index = std::get_if<int>(ValueOrNull(*args, "index"));
+      int64_t idx = 0;
+      bool hasIdx = TryGetInt64(ValueOrNull(*args, "index"), idx);
       const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(*args, "children"));
 
-      if (!disposed_ && index && children) {
+      if (!disposed_ && hasIdx && children) {
         try {
           auto items = mediaPlaybackList.Items();
-          int currentIndex = *index;
+          int size = static_cast<int>(items.Size());
+          int currentIndex = static_cast<int>(idx);
+
+          if (currentIndex < 0 || currentIndex > size) {
+            return result->Error("concatenatingInsertAll_error", "index out of bounds");
+          }
+
           for (const auto& child : *children) {
             const auto* childMap = std::get_if<flutter::EncodableMap>(&child);
             if (childMap) {
-              auto mediaSource = createMediaPlaybackItem(*childMap);
-              auto item = Playback::MediaPlaybackItem(mediaSource);
+              auto item = createMediaPlaybackItem(*childMap);
               items.InsertAt(currentIndex, item);
               currentIndex++;
             }
           }
         } catch (const winrt::hresult_error& ex) {
           return result->Error("concatenatingInsertAll_error", winrt::to_string(ex.message()));
+        } catch (const std::exception& ex) {
+          return result->Error("concatenatingInsertAll_error", ex.what());
+        } catch (...) {
+          return result->Error("concatenatingInsertAll_error", "Unknown error inserting items");
         }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("concatenatingRemoveRange") == 0) {
-      const auto* start = std::get_if<int>(ValueOrNull(*args, "startIndex"));
-      const auto* end = std::get_if<int>(ValueOrNull(*args, "endIndex"));
+      int64_t start = 0;
+      bool hasStart = TryGetInt64(ValueOrNull(*args, "startIndex"), start);
+      int64_t end = 0;
+      bool hasEnd = TryGetInt64(ValueOrNull(*args, "endIndex"), end);
 
-      if (!disposed_ && start && end) {
-        int startIndex = *start;
-        int endIndex = *end;
+      if (!disposed_ && hasStart && hasEnd) {
+        int startIndex = static_cast<int>(start);
+        int endIndex = static_cast<int>(end);
 
-        auto items = mediaPlaybackList.Items();
-        int size = static_cast<int>(items.Size());
+        try {
+          auto items = mediaPlaybackList.Items();
+          int size = static_cast<int>(items.Size());
 
-        if (endIndex > startIndex && startIndex >= 0 && endIndex <= size) {
-          int count = endIndex - startIndex;
-          try {
+          if (endIndex > startIndex && startIndex >= 0 && endIndex <= size) {
+            int count = endIndex - startIndex;
             for (int i = 0; i < count; i++) {
               items.RemoveAt(startIndex);
             }
-          } catch (const winrt::hresult_error& ex) {
-            return result->Error("concatenatingRemoveRange_error", winrt::to_string(ex.message()));
+            return result->Success(flutter::EncodableMap());
+          } else {
+            return result->Error("concatenatingRemoveRange_error", "invalid range");
           }
-          return result->Success(flutter::EncodableMap());
-        } else {
-          return result->Error("concatenatingRemoveRange_error", "invalid range");
+        } catch (const winrt::hresult_error& ex) {
+          return result->Error("concatenatingRemoveRange_error", winrt::to_string(ex.message()));
+        } catch (const std::exception& ex) {
+          return result->Error("concatenatingRemoveRange_error", ex.what());
+        } catch (...) {
+          return result->Error("concatenatingRemoveRange_error", "Unknown error removing items");
         }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("concatenatingMove") == 0) {
-      const auto* from = std::get_if<int>(ValueOrNull(*args, "currentIndex"));
-      const auto* to = std::get_if<int>(ValueOrNull(*args, "newIndex"));
+      int64_t from = 0;
+      bool hasFrom = TryGetInt64(ValueOrNull(*args, "currentIndex"), from);
+      int64_t to = 0;
+      bool hasTo = TryGetInt64(ValueOrNull(*args, "newIndex"), to);
 
-      if (!disposed_ && from && to) {
-        auto items = mediaPlaybackList.Items();
-        int size = static_cast<int>(items.Size());
-
-        int currentIndex = *from;
-        int newIndex = *to;
-
-        if (currentIndex >= size || newIndex > size) {
-          return result->Error("concatenatingMove_error", "index out of bounds");
-        }
-
+      if (!disposed_ && hasFrom && hasTo) {
         try {
-          auto item = items.GetAt(currentIndex);
-          items.RemoveAt(currentIndex);
-          items.InsertAt(newIndex, item);
+          auto items = mediaPlaybackList.Items();
+          int size = static_cast<int>(items.Size());
+
+          int currentIndex = static_cast<int>(from);
+          int newIndex = static_cast<int>(to);
+
+          if (currentIndex < 0 || currentIndex >= size || newIndex < 0 || newIndex >= size) {
+            return result->Error("concatenatingMove_error", "index out of bounds");
+          }
+
+          if (currentIndex != newIndex) {
+            auto item = items.GetAt(currentIndex);
+            items.RemoveAt(currentIndex);
+            items.InsertAt(newIndex, item);
+          }
         } catch (const winrt::hresult_error& ex) {
           return result->Error("concatenatingMove_error", winrt::to_string(ex.message()));
+        } catch (const std::exception& ex) {
+          return result->Error("concatenatingMove_error", ex.what());
+        } catch (...) {
+          return result->Error("concatenatingMove_error", "Unknown error moving item");
         }
       }
       result->Success(flutter::EncodableMap());
@@ -592,22 +702,28 @@ public:
       }
       auto childSource = createMediaSource(*child);
 
-      const auto* startUs = std::get_if<int32_t>(ValueOrNull(*child, "start"));
-      const auto* endUs = std::get_if<int32_t>(ValueOrNull(*child, "end"));
+      int64_t start = 0;
+      if (!TryGetInt64(ValueOrNull(source, "start"), start)) {
+        TryGetInt64(ValueOrNull(*child, "start"), start);
+      }
 
-      int64_t start = (startUs != nullptr) ? *startUs : 0;
+      int64_t end = 0;
+      bool hasEnd = TryGetInt64(ValueOrNull(source, "end"), end);
+      if (!hasEnd) {
+        hasEnd = TryGetInt64(ValueOrNull(*child, "end"), end);
+      }
 
-      if (endUs != nullptr) {
-        int64_t duration = *endUs - start;
+      if (hasEnd && end > start) {
+        int64_t duration = end - start;
         return Playback::MediaPlaybackItem(
           childSource,
-          TimeSpan(std::chrono::microseconds(start)),
+          TimeSpan(std::chrono::microseconds(std::max<int64_t>(0, start))),
           TimeSpan(std::chrono::microseconds(duration))
         );
       } else {
         return Playback::MediaPlaybackItem(
           childSource,
-          TimeSpan(std::chrono::microseconds(start))
+          TimeSpan(std::chrono::microseconds(std::max<int64_t>(0, start)))
         );
       }
     } else {
@@ -634,29 +750,42 @@ public:
   }
 
   void broadcastState() {
+    if (disposed_) return;
+    std::lock_guard<std::mutex> lock(broadcast_mutex_);
+    if (disposed_) return;
+
     try {
       broadcastPlaybackEvent();
     } catch (winrt::hresult_error const& ex) {
       std::cerr << "[just_audio_windows] Broadcast event error: " << winrt::to_string(ex.message()) << std::endl;
+    } catch (const std::exception& ex) {
+      std::cerr << "[just_audio_windows] Broadcast event std error: " << ex.what() << std::endl;
+    } catch (...) {
+      std::cerr << "[just_audio_windows] Broadcast event unknown error" << std::endl;
     }
 
     try {
       broadcastDataEvent();
     } catch (winrt::hresult_error const& ex) {
       std::cerr << "[just_audio_windows] Broadcast data error: " << winrt::to_string(ex.message()) << std::endl;
+    } catch (const std::exception& ex) {
+      std::cerr << "[just_audio_windows] Broadcast data std error: " << ex.what() << std::endl;
+    } catch (...) {
+      std::cerr << "[just_audio_windows] Broadcast data unknown error" << std::endl;
     }
   }
 
   void broadcastPlaybackEvent() {
     if (disposed_) return;
     auto session = mediaPlayer.PlaybackSession();
+    if (!session) return;
 
     auto eventData = flutter::EncodableMap();
 
     // NaturalDuration can throw when session is transitioning between items (PR #57)
     int64_t duration = 0;
     try {
-      duration = TO_MICROSECONDS(session.NaturalDuration());
+      duration = TimeSpanToMicroseconds(session.NaturalDuration());
     } catch (...) {
       duration = 0;
     }
@@ -668,35 +797,40 @@ public:
     try {
       bufferingProgress = session.BufferingProgress();
     } catch (...) {
-      if (!buffering_progress_warned_) {
-        buffering_progress_warned_ = true;
-        std::cerr << "[just_audio_windows]: Broadcast playback event error: Error accessing BufferingProgress. Using default value of 1." << std::endl;
-      }
+      JAW_TRACE("[just_audio_windows]: BufferingProgress not available for current source. Using default value of 1.0.");
       bufferingProgress = 1.0;
     }
 
     // Position can throw when transitioning between items (PR #57)
     int64_t position = 0;
     try {
-      position = TO_MICROSECONDS(session.Position());
+      position = TimeSpanToMicroseconds(session.Position());
     } catch (...) {
       position = 0;
     }
 
     eventData[flutter::EncodableValue("processingState")] = flutter::EncodableValue(processingState(session.PlaybackState()));
     eventData[flutter::EncodableValue("updatePosition")] = flutter::EncodableValue(position);
-    eventData[flutter::EncodableValue("updateTime")] = flutter::EncodableValue(TO_MILLISECONDS(now.time_since_epoch()));
+    eventData[flutter::EncodableValue("updateTime")] = flutter::EncodableValue(
+        static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()));
     eventData[flutter::EncodableValue("bufferedPosition")] = flutter::EncodableValue(static_cast<int64_t>(duration * bufferingProgress));
     eventData[flutter::EncodableValue("duration")] = flutter::EncodableValue(duration);
 
-    if (mediaPlaybackList.Items().Size() > 0) {
-      int64_t currentIndex = mediaPlaybackList.CurrentItemIndex();
-      if (currentIndex != 4294967295) { // UINT32_MAX - 1
-        eventData[flutter::EncodableValue("currentIndex")] = flutter::EncodableValue(currentIndex);
+    int64_t currentIndex = 0;
+    try {
+      if (mediaPlaybackList) {
+        auto items = mediaPlaybackList.Items();
+        if (items && items.Size() > 0) {
+          uint32_t idx = mediaPlaybackList.CurrentItemIndex();
+          if (idx != 4294967295) { // UINT32_MAX - 1
+            currentIndex = idx;
+          }
+        }
       }
-    } else {
-      eventData[flutter::EncodableValue("currentIndex")] = flutter::EncodableValue(0);
+    } catch (...) {
+      currentIndex = 0;
     }
+    eventData[flutter::EncodableValue("currentIndex")] = flutter::EncodableValue(currentIndex);
 
     // Defer channel write onto Flutter platform thread (PR #63)
     OnPlatformThread([this, eventData = std::move(eventData)] {
@@ -731,7 +865,7 @@ public:
       pos = 0;
     }
 
-    if (dur > 0 && pos == dur) {
+    if (dur > 0 && pos >= dur) {
       return 4; //completed
     }
     return 3; //ready
@@ -759,34 +893,29 @@ public:
     });
   }
 
-  int getLoopMode() {
-    try {
-      if (mediaPlayer.IsLoopingEnabled()) {
-        return 1; // one
-      } else if (mediaPlaybackList.AutoRepeatEnabled()) {
-        return 2; // all
-      } else {
-        return 0; // off
-      }
-    } catch (...) {
-      return 0;
-    }
+  int getLoopMode() const {
+    return loop_mode_;
   }
 
-  int getShuffleMode() {
-    return 0;
+  int getShuffleMode() const {
+    return shuffle_mode_;
   }
 
   void seekToItem(uint32_t index) {
-    if (index >= mediaPlaybackList.Items().Size()) {
-      return;
-    }
+    if (disposed_) return;
 
     try {
-      mediaPlaybackList.MoveTo(index);
+      if (mediaPlaybackList) {
+        auto items = mediaPlaybackList.Items();
+        if (items && index < items.Size()) {
+          mediaPlaybackList.MoveTo(index);
+        }
+      }
     } catch (winrt::hresult_error const& ex) {
       std::cerr << "[just_audio_windows] Failed to seek to item: " << winrt::to_string(ex.message()) << std::endl;
-    }
+    } catch (const std::exception& ex) {
+      std::cerr << "[just_audio_windows] Failed to seek to item (std): " << ex.what() << std::endl;
+    } catch (...) {}
 
     // Do NOT call broadcastState() here (PR #57). MoveTo() is asynchronous.
     // CurrentItemChanged will call broadcastState() when the item has settled.
@@ -798,50 +927,58 @@ public:
       mediaPlayer.Position(TimeSpan(std::chrono::microseconds(microseconds)));
     } catch (winrt::hresult_error const& ex) {
       std::cerr << "[just_audio_windows] Failed to seek to position: " << winrt::to_string(ex.message()) << std::endl;
-    }
+    } catch (const std::exception& ex) {
+      std::cerr << "[just_audio_windows] Failed to seek to position (std): " << ex.what() << std::endl;
+    } catch (...) {}
 
     broadcastState();
   }
 
   void setShuffleOrder(const flutter::EncodableMap& source) {
-    const std::string* type = std::get_if<std::string>(ValueOrNull(source, "type"));
-    if (!type) return;
+    if (disposed_) return;
+    try {
+      const std::string* type = std::get_if<std::string>(ValueOrNull(source, "type"));
+      if (!type) return;
 
-    if (type->compare("concatenating") == 0) {
-      const auto* shuffleOrder = std::get_if<flutter::EncodableList>(ValueOrNull(source, "shuffleOrder"));
-      if (!shuffleOrder) return;
+      if (type->compare("concatenating") == 0) {
+        const auto* shuffleOrder = std::get_if<flutter::EncodableList>(ValueOrNull(source, "shuffleOrder"));
+        if (!shuffleOrder) return;
 
-      std::vector<Playback::MediaPlaybackItem> itemsCopy {};
-      for (auto item : mediaPlaybackList.Items()) {
-        itemsCopy.push_back(item);
-      }
+        if (!mediaPlaybackList) return;
 
-      for (size_t i = 0; i < shuffleOrder->size() && i < itemsCopy.size(); i++) {
-        auto item = itemsCopy.at(i);
-        auto insertAt = (*shuffleOrder).at(i).LongValue();
-
-        if (insertAt >= 0 && static_cast<size_t>(insertAt) < itemsCopy.size()) {
-          itemsCopy.erase(itemsCopy.begin() + i);
-          itemsCopy.insert(itemsCopy.begin() + insertAt, item);
+        std::vector<Playback::MediaPlaybackItem> itemsCopy {};
+        for (auto item : mediaPlaybackList.Items()) {
+          itemsCopy.push_back(item);
         }
-      }
 
-      mediaPlaybackList.SetShuffledItems(itemsCopy);
-
-      const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(source, "children"));
-      if (children) {
-        for (const auto& child : *children) {
-          const auto* childMap = std::get_if<flutter::EncodableMap>(&child);
-          if (childMap) {
-            setShuffleOrder(*childMap);
+        for (size_t i = 0; i < shuffleOrder->size() && i < itemsCopy.size(); i++) {
+          auto item = itemsCopy.at(i);
+          int64_t insertAt = 0;
+          if (TryGetInt64(&((*shuffleOrder).at(i)), insertAt)) {
+            if (insertAt >= 0 && static_cast<size_t>(insertAt) < itemsCopy.size()) {
+              itemsCopy.erase(itemsCopy.begin() + i);
+              itemsCopy.insert(itemsCopy.begin() + insertAt, item);
+            }
           }
         }
+
+        mediaPlaybackList.SetShuffledItems(itemsCopy);
+
+        const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(source, "children"));
+        if (children) {
+          for (const auto& child : *children) {
+            const auto* childMap = std::get_if<flutter::EncodableMap>(&child);
+            if (childMap) {
+              setShuffleOrder(*childMap);
+            }
+          }
+        }
+      } else if (type->compare("looping") == 0) {
+        const auto* child = std::get_if<flutter::EncodableMap>(ValueOrNull(source, "child"));
+        if (child) {
+          setShuffleOrder(*child);
+        }
       }
-    } else if (type->compare("looping") == 0) {
-      const auto* child = std::get_if<flutter::EncodableMap>(ValueOrNull(source, "child"));
-      if (child) {
-        setShuffleOrder(*child);
-      }
-    }
+    } catch (...) {}
   }
 };

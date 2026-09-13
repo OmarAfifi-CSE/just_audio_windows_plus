@@ -65,13 +65,13 @@ void main() {
       final completer = Completer<void>();
 
       Timer.periodic(const Duration(milliseconds: 2), (timer) {
-        final tick = timer.tick;
-        if (tick > 50) {
+        if (completedOperations >= 50) {
           timer.cancel();
-          completer.complete();
+          if (!completer.isCompleted) completer.complete();
           return;
         }
 
+        final tick = completedOperations;
         switch (tick % 5) {
           case 0:
             channel.invokeMethod('play', <String, dynamic>{});
@@ -90,6 +90,10 @@ void main() {
             break;
         }
         completedOperations++;
+        if (completedOperations >= 50) {
+          timer.cancel();
+          if (!completer.isCompleted) completer.complete();
+        }
       });
 
       await completer.future;

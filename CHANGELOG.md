@@ -1,3 +1,15 @@
+## 0.3.0
+
+* **64-bit Timestamp Safety**: Introduced `TryGetInt64` across all seeking, duration, and playlist mutations. StandardMessageCodec encodes timestamps exceeding 35.7 minutes ($2^{31}-1$ microseconds) as `int64_t`, which previously failed silently under 32-bit `std::get_if<int>`.
+* **Exact Microsecond Precision**: Replaced lossy truncated millisecond arithmetic with exact 64-bit microsecond conversions (`TimeSpanToMicroseconds`), preserving sub-millisecond timeline accuracy.
+* **Event Channel Teardown Hygiene**: Explicitly unregistered binary message handlers in `JustAudioEventSink` destructor to eliminate dangling callbacks and post-disposal access violations (`0xC0000005`).
+* **Defensive Playlist Mutations & Bounds**: Fully bounds-checked `concatenatingMove`, `concatenatingInsertAll`, and `concatenatingRemoveRange` to eliminate native WinRT `E_BOUNDS` exceptions during rapid playlist modifications.
+* **Accurate Looping & Shuffling**: Ensured `LoopMode.all` loops single tracks seamlessly and synchronized internal `loopMode` and `shuffleMode` state broadcasts back to Flutter.
+* **Native MediaEnded Event**: Subscribed to WinRT `MediaPlayer.MediaEnded` for instantaneous `completed` state signaling upon track finish.
+* **Clipping Audio Source Hardening**: Enforced non-negative start offsets and validated duration boundaries for `ClippingAudioSource`.
+* **Clean Codebase Hygiene**: Removed obsolete legacy files (`url_code.hpp`) and unused methods (`GetPlayerByPlayerId`).
+* **Pub.dev Package Showcase**: Added official package screenshots metadata in `pubspec.yaml`.
+
 ## 0.2.0
 
 * **Platform Thread Dispatcher**: Marshals all WinRT event callbacks (`PlaybackStateChanged`, `MediaFailed`, `CurrentItemChanged`, `ItemFailed`) onto Flutter's UI platform thread via a Win32 message-only window (`HWND_MESSAGE`). Completely eliminates engine warnings: `channel sent a message from native to Flutter on a non-platform thread`.

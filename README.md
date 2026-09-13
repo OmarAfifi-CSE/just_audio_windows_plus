@@ -12,7 +12,7 @@
 Play internet audio streams, local audio files, sound effects, and gapless playlists effortlessly in your Flutter desktop applications. Powered by native Windows Media Foundation (`WinRT Windows.Media.Playback.MediaPlayer`) and modern C++20, `just_audio_windows_plus` gives you a fast, reliable, and production-grade audio experience right out of the box.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/OmarAfifi-CSE/just_audio_windows_plus/main/screenshots/desktop_player_showcase.png" alt="just_audio_windows_plus Showcase" width="720"/>
+  <img src="https://raw.githubusercontent.com/OmarAfifi-CSE/just_audio_windows_plus/main/screenshots/desktop_player_showcase.png" alt="just_audio_windows_plus Showcase" width="500"/>
 </p>
 
 ---

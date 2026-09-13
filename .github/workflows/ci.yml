@@ -1,0 +1,44 @@
+name: CI Quality Gate
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  validate:
+    name: Static Analysis, Tests & Validation
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install package dependencies
+        run: flutter pub get
+
+      - name: Analyze package
+        run: flutter analyze --fatal-infos
+
+      - name: Run unit test suite
+        run: flutter test --coverage
+
+      - name: Install example app dependencies
+        run: |
+          cd example
+          flutter pub get
+
+      - name: Analyze example app
+        run: |
+          cd example
+          flutter analyze --fatal-infos
+
+      - name: Validate dry-run publish
+        run: dart pub publish --dry-run

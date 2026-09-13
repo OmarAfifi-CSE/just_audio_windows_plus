@@ -22,16 +22,16 @@ TEST(EncodeSpacesInUri, EmptyString_ReturnsEmpty) {
 // This is the core regression for https://github.com/bdlukaa/just_audio_windows/issues/26.
 TEST(EncodeSpacesInUri, LiteralSpacesInFilePath_EncodedAsPercent20) {
   EXPECT_EQ(
-      EncodeSpacesInUri("file:///C:/Users/My Files/song.mp3"),
-      "file:///C:/Users/My%20Files/song.mp3");
+      EncodeSpacesInUri("file:///C:/Users/My Files/audio.mp3"),
+      "file:///C:/Users/My%20Files/audio.mp3");
 }
 
 // Multiple consecutive spaces must each be individually encoded.
 TEST(EncodeSpacesInUri, MultipleSpaces_AllEncoded) {
   EXPECT_EQ(
       EncodeSpacesInUri(
-          "C:/Users/HP/Downloads/Ve Kamleya Rocky Aur Rani.mp3"),
-      "C:/Users/HP/Downloads/Ve%20Kamleya%20Rocky%20Aur%20Rani.mp3");
+          "C:/Users/HP/Downloads/Recording Session File.mp3"),
+      "C:/Users/HP/Downloads/Recording%20Session%20File.mp3");
 }
 
 // Already percent-encoded spaces (%20) must NOT be double-encoded.
@@ -39,8 +39,8 @@ TEST(EncodeSpacesInUri, MultipleSpaces_AllEncoded) {
 // Dart's Uri.file() is left intact.
 TEST(EncodeSpacesInUri, AlreadyEncodedSpaces_NotDoubleEncoded) {
   EXPECT_EQ(
-      EncodeSpacesInUri("file:///C:/Users/My%20Files/song.mp3"),
-      "file:///C:/Users/My%20Files/song.mp3");
+      EncodeSpacesInUri("file:///C:/Users/My%20Files/audio.mp3"),
+      "file:///C:/Users/My%20Files/audio.mp3");
 }
 
 // Percent-encoded multi-byte UTF-8 sequences (e.g. U+2019 RIGHT SINGLE
@@ -66,9 +66,90 @@ TEST(EncodeSpacesInUri, MixedLiteralSpacesAndPercentEncoded) {
 // A URL with only query-string spaces should have them encoded.
 TEST(EncodeSpacesInUri, SpaceInQueryString) {
   EXPECT_EQ(
-      EncodeSpacesInUri("https://example.com/tts?text=hello world"),
-      "https://example.com/tts?text=hello%20world");
+      EncodeSpacesInUri("https://example.com/audio?title=recording session"),
+      "https://example.com/audio?title=recording%20session");
+}
+
+// Arabic Unicode file paths with literal spaces must encode spaces and preserve UTF-8 bytes.
+TEST(EncodeSpacesInUri, ArabicUnicodePathWithSpaces) {
+  EXPECT_EQ(
+      EncodeSpacesInUri("file:///C:/تلاوات قرآنية/سورة الفاتحة.mp3"),
+      "file:///C:/تلاوات%20قرآنية/سورة%20الفاتحة.mp3");
+}
+
+// Windows UNC network paths with spaces must be encoded cleanly.
+TEST(EncodeSpacesInUri, UncNetworkPathWithSpaces) {
+  EXPECT_EQ(
+      EncodeSpacesInUri(R"(\\server\shared drive\audio track.wav)"),
+      R"(\\server\shared%20drive\audio%20track.wav)");
+}
+
+// Leading and trailing spaces must be handled safely.
+TEST(EncodeSpacesInUri, LeadingAndTrailingSpaces) {
+  EXPECT_EQ(
+      EncodeSpacesInUri(" audio.mp3 "),
+      "%20audio.mp3%20");
+}
+
+// URL fragments with spaces should be encoded.
+TEST(EncodeSpacesInUri, FragmentWithSpaces) {
+  EXPECT_EQ(
+      EncodeSpacesInUri("https://example.com/audio.mp3#timestamp 01:23"),
+      "https://example.com/audio.mp3#timestamp%2001:23");
+}
+
+// Large strings with repeated spaces must not overflow and maintain capacity.
+TEST(EncodeSpacesInUri, LongStringStressTest) {
+  std::string longInput(500, ' ');
+  std::string expected;
+  for (int i = 0; i < 500; ++i) expected += "%20";
+  EXPECT_EQ(EncodeSpacesInUri(longInput), expected);
+}
+
+// Arabic paths with full Tashkeel and punctuation.
+TEST(EncodeSpacesInUri, ArabicWithFullTashkeelAndPunctuation) {
+  EXPECT_EQ(
+      EncodeSpacesInUri(
+          "file:///C:/تلاوات خاشعة/الشيخ محمد صِدِّيق المِنْشَاوِيّ (رَحِمَهُ اللَّهُ)/001 - سُورَةُ الفَاتِحَةِ [مَكِّيَّة].mp3"),
+      "file:///C:/تلاوات%20خاشعة/الشيخ%20محمد%20صِدِّيق%20المِنْشَاوِيّ%20(رَحِمَهُ%20اللَّهُ)/001%20-%20سُورَةُ%20الفَاتِحَةِ%20[مَكِّيَّة].mp3");
+}
+
+// URLs with ports, IP addresses, and spaces in path.
+TEST(EncodeSpacesInUri, LocalNetworkIpAndPortWithSpaces) {
+  EXPECT_EQ(
+      EncodeSpacesInUri("http://192.168.1.100:8080/quran streams/001 minshawi.mp3"),
+      "http://192.168.1.100:8080/quran%20streams/001%20minshawi.mp3");
+}
+
+// Consecutive 10 spaces in a row.
+TEST(EncodeSpacesInUri, TenConsecutiveSpaces) {
+  EXPECT_EQ(
+      EncodeSpacesInUri("quran          recitation.mp3"),
+      "quran%20%20%20%20%20%20%20%20%20%20recitation.mp3");
+}
+
+// Paths with mixed special characters (brackets, plus, ampersand, hash).
+TEST(EncodeSpacesInUri, SpecialCharactersInPathWithSpaces) {
+  EXPECT_EQ(
+      EncodeSpacesInUri("file:///C:/Audio [HQ] (2026) + Minshawi & Holy Quran/track 01.mp3"),
+      "file:///C:/Audio%20[HQ]%20(2026)%20+%20Minshawi%20&%20Holy%20Quran/track%2001.mp3");
+}
+
+// Extreme stress test: 10,000 characters alternating char and space.
+TEST(EncodeSpacesInUri, TenThousandCharacterAlternatingStressTest) {
+  std::string input;
+  std::string expected;
+  input.reserve(10000);
+  expected.reserve(20000);
+
+  for (int i = 0; i < 5000; ++i) {
+    input += "a ";
+    expected += "a%20";
+  }
+
+  EXPECT_EQ(EncodeSpacesInUri(input), expected);
 }
 
 }  // namespace test
 }  // namespace just_audio_windows
+

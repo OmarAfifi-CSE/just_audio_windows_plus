@@ -1,0 +1,66 @@
+name: Release & Publish to pub.dev
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Release & Publish
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run Static Analysis
+        run: flutter analyze --fatal-infos
+
+      - name: Extract Release Notes from CHANGELOG
+        run: |
+          python3 -c "
+          import os, re
+
+          tag = os.environ.get('GITHUB_REF_NAME', '')
+          version = tag.lstrip('v')
+
+          notes = ''
+          if os.path.exists('CHANGELOG.md'):
+              with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
+                  content = f.read()
+              pattern = rf'##\s+{re.escape(version)}\s*\n(.*?)(?=\n##|\Z)'
+              match = re.search(pattern, content, re.DOTALL)
+              if match:
+                  notes = match.group(1).strip()
+
+          if not notes:
+              notes = f'Automated release for {tag}.'
+
+          with open('RELEASE_NOTES.md', 'w', encoding='utf-8') as f:
+              f.write(notes + '\n')
+          "
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+
+      - name: Publish to pub.dev
+        run: dart pub publish --force

@@ -1,12 +1,26 @@
 import 'package:flutter/foundation.dart';
 
-/// The Windows implementation of `just_audio`.
+/// # just_audio_windows_plus
 ///
-/// This package provides the native C++ WinRT Media Player backend
-/// with thread-safe EventSink and atomic disposal management, eliminating
-/// Access Violation (0xC0000005) crashes on Windows.
+/// The premier, production-grade Windows audio engine for Flutter.
+///
+/// Powered by native Windows Media Foundation (`WinRT Windows.Media.Playback.MediaPlayer`),
+/// engineered with modern C++20, and hardened with multi-threaded mutex synchronization,
+/// this plugin provides rock-solid, crash-proof audio for Flutter on Windows desktop.
+///
+/// ## Quickstart
+///
+/// ```dart
+/// import 'package:just_audio/just_audio.dart';
+///
+/// void main() async {
+///   final player = AudioPlayer();
+///   await player.setUrl('https://example.com/audio.mp3');
+///   await player.play();
+/// }
+/// ```
 class JustAudioWindowsPlus {
-  /// Internal marker to ensure the library is loaded.
+  /// Internal marker ensuring the native Windows plugin library is registered.
   @visibleForTesting
   static const bool isSupported = true;
 }

@@ -1,8 +1,10 @@
 #include "../uri_utils.hpp"
+#include "../native_utils.hpp"
 
 #include <gtest/gtest.h>
+#include <limits>
 
-namespace just_audio_windows {
+namespace just_audio_windows_plus {
 namespace test {
 
 // ── EncodeSpacesInUri ────────────────────────────────────────────────────────
@@ -150,6 +152,30 @@ TEST(EncodeSpacesInUri, TenThousandCharacterAlternatingStressTest) {
   EXPECT_EQ(EncodeSpacesInUri(input), expected);
 }
 
-}  // namespace test
-}  // namespace just_audio_windows
+TEST(ReorderByShuffleOrder, AppliesPermutationFromOriginalIndices) {
+  const std::vector<int> source{0, 1, 2};
+  std::vector<int> result;
 
+  ASSERT_TRUE(ReorderByShuffleOrder(source, std::vector<int64_t>{1, 2, 0}, result));
+  EXPECT_EQ(result, (std::vector<int>{1, 2, 0}));
+}
+
+TEST(ReorderByShuffleOrder, RejectsDuplicateOrOutOfRangeIndices) {
+  const std::vector<int> source{0, 1, 2};
+  std::vector<int> result{9};
+
+  EXPECT_FALSE(ReorderByShuffleOrder(source, std::vector<int64_t>{0, 0, 2}, result));
+  EXPECT_TRUE(result.empty());
+  EXPECT_FALSE(ReorderByShuffleOrder(source, std::vector<int64_t>{0, 1, 3}, result));
+}
+
+TEST(ClampBufferedPosition, KeepsPositionWithinDuration) {
+  EXPECT_EQ(ClampBufferedPosition(100, -1.0), 0);
+  EXPECT_EQ(ClampBufferedPosition(100, 0.5), 50);
+  EXPECT_EQ(ClampBufferedPosition(100, 2.0), 100);
+  EXPECT_EQ(ClampBufferedPosition(100, std::numeric_limits<double>::quiet_NaN()), 0);
+  EXPECT_EQ(ClampBufferedPosition(0, 0.5), 0);
+}
+
+}  // namespace test
+}  // namespace just_audio_windows_plus

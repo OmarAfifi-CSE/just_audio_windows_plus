@@ -1,6 +1,6 @@
 name: just_audio_windows_plus
 description: High-performance, seamless audio player for Flutter on Windows. Effortlessly play audio files, live streams, and playlists powered by native C++20 WinRT MediaPlayer.
-version: 0.3.0
+version: 0.4.0
 repository: https://github.com/OmarAfifi-CSE/just_audio_windows_plus
 issue_tracker: https://github.com/OmarAfifi-CSE/just_audio_windows_plus/issues
 
@@ -8,6 +8,7 @@ topics:
   - audio
   - windows
   - just-audio
+  - audio-player
   - media-player
 
 screenshots:

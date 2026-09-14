@@ -1,3 +1,17 @@
+## 0.4.0
+
+* **Linear Permutation Shuffle Engine**: Replaced quadratic index-shifting with an $O(N)$ permutation mapping (`ReorderByShuffleOrder`). Validates bounds, enforces element uniqueness, and rejects malformed shuffle arrays without corrupting playlist state.
+* **Buffering Progress Clamping & NaN Defense**: Introduced `ClampBufferedPosition` with `std::isfinite` validation. Safely bounds buffer calculations within `[0, duration]`, eliminating C++ undefined behavior and Dart assertion failures caused by transient `NaN` or `>1.0` progress values during live streaming.
+* **Atomic Concurrency Synchronization**: Upgraded `source_set_`, `loop_mode_`, and `shuffle_mode_` to `std::atomic` in `player.hpp`, eliminating data races between background WinRT threadpool callbacks and Flutter UI thread method calls.
+* **Negative Seek Protection**: Enforced `std::max<int64_t>(0, microseconds)` in `seekToPosition` to prevent native WinRT `E_INVALIDARG` (0x80070057) exceptions.
+* **Observable Native Error Logging & Brand Modernization**: Modernized all native diagnostic logs and error reporting macros to `[just_audio_windows_plus]`, replacing silent empty `catch (...) {}` blocks across primary playback and playlist operations (`play`, `pause`, `stop`, `setVolume`, `setSpeed`, `setLoopMode`, `setShuffleMode`, `setShuffleOrder`, `seekToItem`, `seekToPosition`) with `JAW_ERROR` macros logging to `std::cerr` for clear diagnostic visibility without crashing.
+* **Method Arguments Null Safety**: Added defensive null-check guards across all parameterized method calls (`load`, `seek`, `setVolume`, `setSpeed`, `setLoopMode`, `setShuffleMode`, `setShuffleOrder`, `concatenatingInsertAll`, `concatenatingRemoveRange`, `concatenatingMove`), returning descriptive channel errors instead of crashing from native null pointer dereferences.
+* **Source State Transition Integrity**: Deferred `source_set_` state settlement until after source loading and initial seek settle successfully, with guaranteed rollback to `false` on any failure or disposal to prevent the player from getting stuck in `loading` (state 1).
+* **Thread-Safe Dispatcher Teardown & Worker Thread Isolation**: Synchronized window teardown and queue clearing under mutex in `~PlatformThreadDispatcher()`. Hardened `OnPlatformThread` to safely drop and trace events if the dispatcher is unavailable, strictly preventing background WinRT worker threads from invoking Flutter binary messenger or event sinks off the UI platform thread.
+* **Unified Sovereign C++ Architecture**: Renamed internal implementation to `windows/just_audio_windows_plus_plugin.cpp` and class to `JustAudioWindowsPlusPlugin`. Cleaned legacy exports to export exclusively `JustAudioWindowsPlusPluginRegisterWithRegistrar`.
+* **Native C++ CI Quality Gate**: Added automated Windows debug build (`flutter build windows --debug`) in GitHub Actions `ci.yml` to continuously verify MSVC compilation and C++ linkage.
+* **Native Unit Test Suite**: Added GoogleTest test cases in `uri_utils_test.cpp` covering shuffle permutations, duplicate rejection, and buffer clamping edge cases.
+
 ## 0.3.0
 
 * **64-bit Timestamp Safety**: Introduced `TryGetInt64` across all seeking, duration, and playlist mutations. StandardMessageCodec encodes timestamps exceeding 35.7 minutes ($2^{31}-1$ microseconds) as `int64_t`, which previously failed silently under 32-bit `std::get_if<int>`.

@@ -55,24 +55,28 @@ class PlatformThreadDispatcher {
   }
 
   ~PlatformThreadDispatcher() {
-    if (window_) {
-      SetWindowLongPtrW(window_, GWLP_USERDATA, 0);
-      DestroyWindow(window_);
+    HWND window = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      window = window_;
       window_ = nullptr;
+      tasks_.clear();
     }
-    // Whatever is still queued will never be drained. Drop it rather than run
-    // it during teardown, when the players it refers to are going away.
-    std::lock_guard<std::mutex> lock(mutex_);
-    tasks_.clear();
+    if (window) {
+      SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+      DestroyWindow(window);
+    }
   }
 
   PlatformThreadDispatcher(const PlatformThreadDispatcher&) = delete;
   PlatformThreadDispatcher& operator=(const PlatformThreadDispatcher&) = delete;
 
-  // Whether work can actually be marshalled. False if the window could not be
-  // created; callers then run inline, which is what the plugin did everywhere
-  // before this existed.
-  bool available() const { return window_ != nullptr; }
+  // Whether work can actually be marshalled. False means callers must drop the
+  // event rather than invoke Flutter from a worker thread.
+  bool available() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return window_ != nullptr;
+  }
 
   // Whether the caller is already on the platform thread, in which case there is
   // nothing to marshal and the work should just run — that keeps the
@@ -82,13 +86,15 @@ class PlatformThreadDispatcher {
     return GetCurrentThreadId() == platform_thread_id_;
   }
 
-  void Post(std::function<void()> task) {
-    if (!available()) return;
+  bool Post(std::function<void()> task) {
+    HWND window = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      window = window_;
+      if (!window) return false;
       tasks_.push_back(std::move(task));
     }
-    PostMessageW(window_, kRunTasks, 0, 0);
+    return PostMessageW(window, kRunTasks, 0, 0) != FALSE;
   }
 
  private:
@@ -124,6 +130,6 @@ class PlatformThreadDispatcher {
 
   HWND window_ = nullptr;
   DWORD platform_thread_id_ = 0;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::vector<std::function<void()>> tasks_;
 };

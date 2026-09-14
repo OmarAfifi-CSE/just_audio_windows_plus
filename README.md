@@ -33,6 +33,8 @@ Play internet audio streams, local audio files, sound effects, and gapless playl
 | **Volume Adjustment** | ✅ | 0.0 (silent) to 1.0 (full scale) |
 | **Looping & Shuffling** | ✅ | `LoopMode.off`, `one`, `all` & custom shuffle algorithms |
 | **Error Handling** | ✅ | Structured `PlayerException` mapped from WinRT HRESULT |
+| **Permutation Shuffling** | ✅ | **Exclusive to Plus**: $O(N)$ bounds-checked shuffle engine |
+| **Buffering NaN Protection** | ✅ | **Exclusive to Plus**: Guaranteed bounded buffer progress |
 | **UI Platform Thread Safety** | ✅ | **Exclusive to Plus**: Marshals to UI thread (`HWND_MESSAGE`) |
 | **Modern C++20 Toolchain** | ✅ | **Exclusive to Plus**: Seamless MSVC 14.40+ / VS 2026 build |
 | **Atomic Player Lifecycle** | ✅ | **Exclusive to Plus**: Zero `0xC0000005` access violations |
@@ -63,7 +65,7 @@ void main() async {
 
 ## 🌟 What You Can Build
 
-- 🎵 **All Modern Audio Formats**: Native support for MP3, AAC, WAV, FLAC, M4A, as well as live HTTP/HTTPS, HLS, and DASH streams.
+- 🔊 **All Modern Audio Formats**: Native support for MP3, AAC, WAV, FLAC, M4A, as well as live HTTP/HTTPS, HLS, and DASH streams.
 - 📑 **Dynamic Playlists**: Next/previous track navigation, shuffling, looping, and gapless transitions with `ConcatenatingAudioSource`.
 - ⏩ **Smooth Seeking & Scrubbing**: High-precision timeline scrubbing with reactive position streams.
 - 🎚️ **Fine-Grained Controls**: Variable playback speed (0.5x to 2.0x), volume adjustment, looping modes, and silence skipping.
@@ -83,19 +85,27 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.10.6 # Full compatibility with ^0.10.x and ^0.9.x
-  just_audio_windows_plus: ^0.2.0
+  just_audio_windows_plus: ^0.4.0
 ```
 
 ### Path 2: Instant Upgrade for Existing Projects
 
-If your project already uses `just_audio`, you can upgrade your Windows audio engine to `just_audio_windows_plus` with zero changes to your Dart code:
+If your project already uses `just_audio`, simply add `just_audio_windows_plus` to your `dependencies`. Flutter's federated plugin system automatically selects `just_audio_windows_plus` as the Windows platform implementation, giving you full C++20 reliability and zero crashes with **zero changes to your existing Dart code**:
 
 ```yaml
-dependency_overrides:
-  just_audio_windows:
-    git:
-      url: https://github.com/OmarAfifi-CSE/just_audio_windows_plus.git
+dependencies:
+  just_audio: ^0.10.6
+  just_audio_windows_plus: ^0.4.0
 ```
+
+> **Tip (Testing via Git):**
+> If you wish to track the latest unreleased developments from GitHub:
+> ```yaml
+> dependencies:
+>   just_audio_windows_plus:
+>     git:
+>       url: https://github.com/OmarAfifi-CSE/just_audio_windows_plus.git
+> ```
 
 ---
 
@@ -217,10 +227,12 @@ class DesktopAudioBar extends StatelessWidget {
 Developing desktop audio on Windows requires handling native COM/WinRT events and background threads gracefully. `just_audio_windows_plus` was engineered specifically to address common desktop audio pitfalls:
 
 - **Platform Thread Dispatcher (`platform_thread.hpp`)**: WinRT Media Foundation delivers playback callbacks on background threadpools. We marshal these events onto Flutter's UI platform thread via a dedicated Win32 message window (`HWND_MESSAGE`). This ensures zero non-platform thread engine warnings and zero dropped events.
-- **Thread-Safe Mutex & Concurrency Hardening**: All internal player registries and event sinks are synchronized with `std::mutex` and atomic disposal flags, preventing Access Violations (`0xC0000005`) during rapid track changes, hot-reload, and teardown.
+- **Thread-Safe Mutex & Concurrency Hardening**: All internal player registries and event sinks are synchronized with `std::mutex` and atomic variables (`std::atomic<bool> source_set_`, `loop_mode_`, `shuffle_mode_`), preventing data races and Access Violations (`0xC0000005`) during rapid track changes, hot-reload, and teardown.
+- **Permutation-Safe Playlist Shuffling (`native_utils.hpp`)**: Employs a linear $O(N)$ permutation mapping (`ReorderByShuffleOrder`) with strict validation to prevent index corruption, out-of-bounds access, and duplicate item insertion during playlist shuffles.
+- **Live-Stream Buffering Defense**: Guards progress calculations with `ClampBufferedPosition`, preventing `NaN` and out-of-range floats from triggering assertion failures in Dart during dynamic network changes.
 - **Modern C++20 Standard**: Built with `CMAKE_CXX_STANDARD 20`, ensuring seamless compilation with Visual Studio 2026 and modern MSVC toolchains (eliminating `STL1011` coroutine deprecation errors).
 - **Clean System Media Separation**: Disables automatic lockscreen flyout hijacking (`mediaPlayer.CommandManager().IsEnabled(false)`), allowing apps to optionally manage media keys via [`audio_service`](https://pub.dev/packages/audio_service) without conflicts.
-- **Silent Release Builds**: Tracing logs are gated behind `JAW_TRACE` under `#ifndef NDEBUG`, preventing console flood in production.
+- **Diagnostic Native Logging**: Replaced silent empty catch blocks with structured `JAW_ERROR` diagnostics, while tracing logs are gated behind `JAW_TRACE` under `#ifndef NDEBUG`, preventing console flood in production.
 
 ---
 
@@ -232,11 +244,14 @@ How `just_audio_windows_plus` compares to legacy implementations:
 |---|:---:|:---:|
 | **Platform Thread Dispatching** | ❌ Background Threadpool (Engine warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`)** |
 | **C++ Toolchain Standard** | ❌ C++17 (Fails on MSVC 14.51 / VS 2026 `STL1011`) | ✅ **C++20 Native Coroutine Standard** |
-| **Concurrency & Thread Safety** | ❌ Unguarded raw pointers (Fatal `0xC0000005`) | ✅ **`std::mutex` + Atomic Lifecycle** |
+| **Concurrency & Thread Safety** | ❌ Unguarded raw pointers (Fatal `0xC0000005`) | ✅ **`std::mutex` + `std::atomic` Lifecycle** |
+| **Playlist Shuffling Engine** | ❌ $O(N^2)$ erase-insert (corrupts indices) | ✅ **$O(N)$ Permutation-Safe Engine (`native_utils.hpp`)** |
+| **Buffering Progress Defense** | ❌ Unchecked float (`NaN`/`Inf` crashes Dart) | ✅ **Guarded `ClampBufferedPosition`** |
 | **Playlist Rapid Skipping** | ❌ Freezes BufferingProgress / Crashes | ✅ **Defensive WinRT Probing (Zero-Crash)** |
 | **Source Swap Handling** | ❌ Falsely signals `idle` mid-swap (Aborts load) | ✅ **Protected `source_set_` State Guard** |
 | **Initial Load Duration** | ❌ Falsely evaluates `0 == 0` as completed | ✅ **`NaturalDuration > 0` Gating** |
 | **Exception Resiliency** | ❌ `catch(char*)` escapes to `std::terminate` | ✅ **Structured `hresult_error` & `std::exception`** |
+| **Native Error Visibility** | ❌ Empty `catch(...)` (Silent runtime failure) | ✅ **Diagnostic `JAW_ERROR` Logging** |
 | **System Media Flyout** | ❌ Hijacks lockscreen with blank info | ✅ **Clean Separation (De-conflicted SMTC)** |
 | **Release Log Overhead** | ❌ Floods terminal on every volume/seek | ✅ **Silent Release Builds (`JAW_TRACE`)** |
 | **Maintenance Status** | ⚠️ Abandoned (>2 years without pub update) | 🚀 **Actively Maintained & Production Ready** |
@@ -269,6 +284,6 @@ Because `just_audio_windows_plus` cleanly opts out of automatic SMTC hijacking, 
 
 ## 📜 Author & License
 
-- Engineered, hardened, and maintained by **Omar Afifi** ([@OmarAfifi-CSE](https://github.com/OmarAfifi-CSE)).
+- Engineered, hardened, and maintained by [Omar Afifi](https://omar-afifi.com/) ([@OmarAfifi-CSE](https://github.com/OmarAfifi-CSE)).
 - Foundational heritage credited to **Bruno D'Luka** and **Ryan Heise**.
 - Licensed under the **MIT License**. See [LICENSE](LICENSE) for details.

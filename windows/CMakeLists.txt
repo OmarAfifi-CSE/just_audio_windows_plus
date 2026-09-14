@@ -19,9 +19,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(PLUGIN_NAME "just_audio_windows_plus_plugin")
 
 add_library(${PLUGIN_NAME} SHARED
-  "just_audio_windows_plugin.cpp"
+  "just_audio_windows_plus_plugin.cpp"
   "platform_thread.hpp"
   "player.hpp"
+  "native_utils.hpp"
 )
 apply_standard_settings(${PLUGIN_NAME})
 set_target_properties(${PLUGIN_NAME} PROPERTIES

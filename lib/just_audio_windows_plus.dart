@@ -15,7 +15,7 @@ import 'package:flutter/foundation.dart';
 ///
 /// void main() async {
 ///   final player = AudioPlayer();
-///   await player.setUrl('https://example.com/audio.mp3');
+///   await player.setUrl('https://server10.mp3quran.net/minsh/001.mp3');
 ///   await player.play();
 /// }
 /// ```

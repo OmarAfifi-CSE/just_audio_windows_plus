@@ -29,13 +29,13 @@ std::mutex players_mutex_;
 // Marshals WinRT event callbacks onto Flutter's platform UI thread.
 std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
 
-class JustAudioWindowsPlugin : public flutter::Plugin {
+class JustAudioWindowsPlusPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
 
-  JustAudioWindowsPlugin();
+  JustAudioWindowsPlusPlugin();
 
-  virtual ~JustAudioWindowsPlugin();
+  virtual ~JustAudioWindowsPlusPlugin();
 
  private:
   void HandleMethodCall(
@@ -47,7 +47,7 @@ class JustAudioWindowsPlugin : public flutter::Plugin {
 };
 
 // static
-void JustAudioWindowsPlugin::RegisterWithRegistrar(
+void JustAudioWindowsPlusPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows *registrar) {
   auto channel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -56,7 +56,7 @@ void JustAudioWindowsPlugin::RegisterWithRegistrar(
 
   dispatcher_ = std::make_shared<PlatformThreadDispatcher>();
 
-  auto plugin = std::make_unique<JustAudioWindowsPlugin>();
+  auto plugin = std::make_unique<JustAudioWindowsPlusPlugin>();
 
   channel->SetMethodCallHandler(
       [plugin_pointer = plugin.get(), messenger_pointer = registrar->messenger()](const auto &call, auto result) {
@@ -66,9 +66,9 @@ void JustAudioWindowsPlugin::RegisterWithRegistrar(
   registrar->AddPlugin(std::move(plugin));
 }
 
-JustAudioWindowsPlugin::JustAudioWindowsPlugin() {}
+JustAudioWindowsPlusPlugin::JustAudioWindowsPlusPlugin() {}
 
-JustAudioWindowsPlugin::~JustAudioWindowsPlugin() {
+JustAudioWindowsPlusPlugin::~JustAudioWindowsPlusPlugin() {
   std::vector<std::unique_ptr<AudioPlayer>> old_players;
   {
     std::lock_guard<std::mutex> lock(players_mutex_);
@@ -79,13 +79,13 @@ JustAudioWindowsPlugin::~JustAudioWindowsPlugin() {
   dispatcher_.reset();
 }
 
-void JustAudioWindowsPlugin::HandleMethodCall(
+void JustAudioWindowsPlusPlugin::HandleMethodCall(
     const flutter::MethodCall<flutter::EncodableValue> &method_call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result,
     flutter::BinaryMessenger* messenger) {
   const auto* args = std::get_if<flutter::EncodableMap>(method_call.arguments());
   if (!args) {
-    result->NotImplemented();
+    result->Error("argument_error", "arguments must be a map");
     return;
   }
 
@@ -131,7 +131,7 @@ void JustAudioWindowsPlugin::HandleMethodCall(
   }
 }
 
-void JustAudioWindowsPlugin::DisposePlayerByPlayerId(const std::string& id) {
+void JustAudioWindowsPlusPlugin::DisposePlayerByPlayerId(const std::string& id) {
   std::unique_ptr<AudioPlayer> player_to_dispose = nullptr;
   {
     std::lock_guard<std::mutex> lock(players_mutex_);
@@ -150,14 +150,7 @@ void JustAudioWindowsPlugin::DisposePlayerByPlayerId(const std::string& id) {
 
 void JustAudioWindowsPlusPluginRegisterWithRegistrar(
     FlutterDesktopPluginRegistrarRef registrar) {
-  JustAudioWindowsPlugin::RegisterWithRegistrar(
-      flutter::PluginRegistrarManager::GetInstance()
-          ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));
-}
-
-void JustAudioWindowsPluginRegisterWithRegistrar(
-    FlutterDesktopPluginRegistrarRef registrar) {
-  JustAudioWindowsPlugin::RegisterWithRegistrar(
+  JustAudioWindowsPlusPlugin::RegisterWithRegistrar(
       flutter::PluginRegistrarManager::GetInstance()
           ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));
 }

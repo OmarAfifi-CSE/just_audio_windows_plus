@@ -40,6 +40,11 @@ jobs:
           cd example
           flutter analyze --fatal-infos
 
+      - name: Build Windows example
+        run: |
+          cd example
+          flutter build windows --debug
+
       - name: Clean working tree before publish validation
         run: git checkout -- .
 

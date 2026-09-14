@@ -1,8 +1,10 @@
 #pragma comment(lib, "windowsapp")
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -17,6 +19,7 @@
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
+#include "native_utils.hpp"
 #include "platform_thread.hpp"
 #include "uri_utils.hpp"
 
@@ -35,21 +38,24 @@
 #define JAW_TRACE(expr) do { } while (0)
 #endif
 
-inline int64_t TimeSpanToMicroseconds(TimeSpan timespan) {
-  return timespan.count() / 10;
-}
+#define JAW_ERROR(expr) do { std::cerr << "[just_audio_windows_plus] " << expr << std::endl; } while (0)
 
-inline int64_t TimeSpanToMilliseconds(TimeSpan timespan) {
-  return timespan.count() / 10000;
-}
+using winrt::Windows::Foundation::TimeSpan;
+using winrt::Windows::Foundation::Uri;
+using namespace winrt::Windows::Foundation;
+using namespace winrt::Windows::Media;
+using winrt::Windows::Media::Core::MediaSource;
 
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 
-using namespace winrt::Windows::Foundation;
-using namespace winrt::Windows::Media;
+inline int64_t TimeSpanToMicroseconds(winrt::Windows::Foundation::TimeSpan timespan) {
+  return timespan.count() / 10;
+}
 
-using winrt::Windows::Media::Core::MediaSource;
+inline int64_t TimeSpanToMilliseconds(winrt::Windows::Foundation::TimeSpan timespan) {
+  return timespan.count() / 10000;
+}
 
 // Looks for |key| in |map|, returning the associated value if it is present, or
 // a nullptr if not.
@@ -165,7 +171,7 @@ private:
   // Whether `load` has ever been handled for this player.
   // WinRT reports MediaPlaybackState::None while a source is being swapped in.
   // Mapping None to idle mid-load causes just_audio to abort loading in flight.
-  bool source_set_ = false;
+  std::atomic<bool> source_set_{false};
 
   // Marshals WinRT callbacks to the Flutter platform thread.
   std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
@@ -174,16 +180,23 @@ private:
   std::shared_ptr<int> life_ = std::make_shared<int>(0);
 
   void OnPlatformThread(std::function<void()> task) {
-    if (!dispatcher_ || !dispatcher_->available() ||
-        dispatcher_->on_platform_thread()) {
+    if (dispatcher_ && dispatcher_->on_platform_thread()) {
       task();
       return;
     }
+    if (!dispatcher_ || !dispatcher_->available()) {
+      // Worker thread without an active platform dispatcher: drop the task
+      // rather than invoking Flutter channels from a non-platform thread.
+      JAW_TRACE("[just_audio_windows_plus] Dispatcher unavailable; dropping event from non-platform thread");
+      return;
+    }
     std::weak_ptr<int> life = life_;
-    dispatcher_->Post([life, task = std::move(task)]() {
+    if (!dispatcher_->Post([life, task = std::move(task)]() {
       if (life.expired()) return;
       task();
-    });
+    })) {
+      JAW_TRACE("[just_audio_windows_plus] PostMessage failed; dropping event");
+    }
   }
 
   // Tokens for event unsubscription
@@ -197,8 +210,8 @@ private:
   // Mutex to serialize broadcastState across platform and WinRT background worker threads
   std::mutex broadcast_mutex_;
 
-  int loop_mode_ = 0;
-  int shuffle_mode_ = 0;
+  std::atomic<int> loop_mode_{0};
+  std::atomic<int> shuffle_mode_{0};
 
 public:
   std::string id;
@@ -217,6 +230,7 @@ public:
 
     // Immediately invalidate pending platform thread callbacks
     life_.reset();
+    source_set_.store(false);
 
     std::lock_guard<std::mutex> lock(broadcast_mutex_);
 
@@ -299,21 +313,21 @@ public:
       if (disposed_) return;
       try {
         broadcastState();
-      } catch (...) {}
+      } catch (...) { JAW_ERROR("PlaybackStateChanged broadcastState failed"); }
     });
 
     natural_duration_token_ = mediaPlayer.PlaybackSession().NaturalDurationChanged([this](auto, const auto&) -> void {
       if (disposed_) return;
       try {
         broadcastState();
-      } catch (...) {}
+      } catch (...) { JAW_ERROR("NaturalDurationChanged broadcastState failed"); }
     });
 
     media_failed_token_ = mediaPlayer.MediaFailed([this](auto, const Playback::MediaPlayerFailedEventArgs& args) -> void {
       if (disposed_) return;
       std::string errorMessage = winrt::to_string(args.ErrorMessage());
 
-      std::cerr << "[just_audio_windows] Media error: " << errorMessage << std::endl;
+      std::cerr << "[just_audio_windows_plus] Media error: " << errorMessage << std::endl;
 
       auto code = "unknown";
       switch (args.Error()) {
@@ -345,7 +359,7 @@ public:
       if (disposed_) return;
       try {
         broadcastState();
-      } catch (...) {}
+      } catch (...) { JAW_ERROR("MediaEnded broadcastState failed"); }
     });
 
     mediaPlaybackList.MaxPlayedItemsToKeepOpen(2);
@@ -353,7 +367,7 @@ public:
       if (disposed_) return;
       try {
         broadcastState();
-      } catch (...) {}
+      } catch (...) { JAW_ERROR("CurrentItemChanged broadcastState failed"); }
     });
 
     item_failed_token_ = mediaPlaybackList.ItemFailed([this](auto, const Playback::MediaPlaybackItemFailedEventArgs& args) -> void {
@@ -361,7 +375,7 @@ public:
       auto error = winrt::hresult_error(args.Error().ExtendedError());
       auto message = winrt::to_string(error.message());
 
-      std::cerr << "[just_audio_windows] Item error: " << message << std::endl;
+      std::cerr << "[just_audio_windows_plus] Item error: " << message << std::endl;
 
       auto code = "unknown";
       switch (args.Error().ErrorCode()) {
@@ -405,9 +419,12 @@ public:
   ) {
     const auto* args = std::get_if<flutter::EncodableMap>(method_call.arguments());
 
-    JAW_TRACE("[just_audio_windows] Called " << method_call.method_name());
+    JAW_TRACE("[just_audio_windows_plus] Called " << method_call.method_name());
 
     if (method_call.method_name().compare("load") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       const auto* audioSourceData = std::get_if<flutter::EncodableMap>(ValueOrNull(*args, "audioSource"));
       if (!audioSourceData) {
         return result->Error("load_error", "audioSource argument is missing or invalid");
@@ -416,8 +433,6 @@ public:
       bool hasInitialPos = TryGetInt64(ValueOrNull(*args, "initialPosition"), initialPos);
       int64_t initialIdx = 0;
       bool hasInitialIdx = TryGetInt64(ValueOrNull(*args, "initialIndex"), initialIdx);
-
-      source_set_ = true;
 
       try {
         loadSource(*audioSourceData);
@@ -429,11 +444,19 @@ public:
         if (hasInitialPos && (!hasInitialIdx || initialPos > 0)) {
           seekToPosition(initialPos);
         }
+
+        source_set_.store(true);
       } catch (const winrt::hresult_error& error) {
+        source_set_.store(false);
+        JAW_ERROR("load failed (winrt): " << winrt::to_string(error.message()));
         return result->Error("load_error", winrt::to_string(error.message()));
       } catch (const std::exception& error) {
+        source_set_.store(false);
+        JAW_ERROR("load failed (std): " << error.what());
         return result->Error("load_error", error.what());
       } catch (...) {
+        source_set_.store(false);
+        JAW_ERROR("load failed: Unknown error loading the audio source");
         return result->Error("load_error", "Unknown error loading the audio source");
       }
 
@@ -442,14 +465,26 @@ public:
       if (!disposed_) {
         try {
           mediaPlayer.Play();
-        } catch (...) {}
+        } catch (const winrt::hresult_error& ex) {
+          JAW_ERROR("play failed (winrt): " << winrt::to_string(ex.message()));
+        } catch (const std::exception& ex) {
+          JAW_ERROR("play failed (std): " << ex.what());
+        } catch (...) {
+          JAW_ERROR("play failed");
+        }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("pause") == 0) {
       if (!disposed_) {
         try {
           mediaPlayer.Pause();
-        } catch (...) {}
+        } catch (const winrt::hresult_error& ex) {
+          JAW_ERROR("pause failed (winrt): " << winrt::to_string(ex.message()));
+        } catch (const std::exception& ex) {
+          JAW_ERROR("pause failed (std): " << ex.what());
+        } catch (...) {
+          JAW_ERROR("pause failed");
+        }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("stop") == 0) {
@@ -457,23 +492,35 @@ public:
         try {
           mediaPlayer.Pause();
           seekToPosition(0);
-        } catch (...) {}
+        } catch (const winrt::hresult_error& ex) {
+          JAW_ERROR("stop failed (winrt): " << winrt::to_string(ex.message()));
+        } catch (const std::exception& ex) {
+          JAW_ERROR("stop failed (std): " << ex.what());
+        } catch (...) {
+          JAW_ERROR("stop failed");
+        }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setVolume") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       const auto* volume = std::get_if<double>(ValueOrNull(*args, "volume"));
       if (!disposed_ && volume) {
         try {
           mediaPlayer.Volume(*volume);
-        } catch (...) {}
+        } catch (...) { JAW_ERROR("setVolume failed"); }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setSpeed") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       const auto* speed = std::get_if<double>(ValueOrNull(*args, "speed"));
       if (!disposed_ && speed) {
         try {
           mediaPlayer.PlaybackSession().PlaybackRate(*speed);
-        } catch (...) {}
+        } catch (...) { JAW_ERROR("setSpeed failed"); }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setPitch") == 0) {
@@ -481,9 +528,12 @@ public:
     } else if (method_call.method_name().compare("setSkipSilence") == 0) {
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setLoopMode") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       int64_t loopMode = 0;
       if (!disposed_ && TryGetInt64(ValueOrNull(*args, "loopMode"), loopMode)) {
-        loop_mode_ = static_cast<int>(loopMode);
+        loop_mode_.store(static_cast<int>(loopMode));
         try {
           bool hasList = false;
           try {
@@ -491,7 +541,7 @@ public:
               auto items = mediaPlaybackList.Items();
               hasList = items && items.Size() > 0;
             }
-          } catch (...) {}
+          } catch (...) { JAW_TRACE("loop list state unavailable"); }
 
           switch (loopMode) {
           case 0: // off
@@ -512,29 +562,38 @@ public:
             }
             break;
           }
-        } catch (...) {}
+        } catch (...) { JAW_ERROR("setLoopMode failed"); }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setShuffleMode") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       int64_t shuffleMode = 0;
       if (!disposed_ && TryGetInt64(ValueOrNull(*args, "shuffleMode"), shuffleMode)) {
-        shuffle_mode_ = static_cast<int>(shuffleMode);
+        shuffle_mode_.store(static_cast<int>(shuffleMode));
         try {
           if (mediaPlaybackList) {
             mediaPlaybackList.ShuffleEnabled(shuffleMode == 1);
           }
-        } catch (...) {}
+        } catch (...) { JAW_ERROR("setShuffleMode failed"); }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("setShuffleOrder") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       const auto* source = std::get_if<flutter::EncodableMap>(ValueOrNull(*args, "audioSource"));
       if (!disposed_ && source) {
         try {
           setShuffleOrder(*source);
-        } catch (...) {}
+        } catch (...) { JAW_ERROR("setShuffleOrder failed"); }
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("seek") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       int64_t pos = 0;
       bool hasPos = TryGetInt64(ValueOrNull(*args, "position"), pos);
       int64_t idx = 0;
@@ -550,11 +609,14 @@ public:
               seekToPosition(pos);
             }
           }
-        } catch (...) {}
+        } catch (...) { JAW_ERROR("seek failed"); }
       }
 
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("concatenatingInsertAll") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       int64_t idx = 0;
       bool hasIdx = TryGetInt64(ValueOrNull(*args, "index"), idx);
       const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(*args, "children"));
@@ -587,6 +649,9 @@ public:
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("concatenatingRemoveRange") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       int64_t start = 0;
       bool hasStart = TryGetInt64(ValueOrNull(*args, "startIndex"), start);
       int64_t end = 0;
@@ -619,6 +684,9 @@ public:
       }
       result->Success(flutter::EncodableMap());
     } else if (method_call.method_name().compare("concatenatingMove") == 0) {
+      if (!args) {
+        return result->Error("argument_error", "Method arguments must be a map");
+      }
       int64_t from = 0;
       bool hasFrom = TryGetInt64(ValueOrNull(*args, "currentIndex"), from);
       int64_t to = 0;
@@ -670,7 +738,9 @@ public:
     items.Clear();
 
     const std::string* type = std::get_if<std::string>(ValueOrNull(source, "type"));
-    if (!type) return;
+    if (!type) {
+      throw std::invalid_argument("Source type is missing");
+    }
 
     if (type->compare("concatenating") == 0) {
       const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(source, "children"));
@@ -757,21 +827,21 @@ public:
     try {
       broadcastPlaybackEvent();
     } catch (winrt::hresult_error const& ex) {
-      std::cerr << "[just_audio_windows] Broadcast event error: " << winrt::to_string(ex.message()) << std::endl;
+      std::cerr << "[just_audio_windows_plus] Broadcast event error: " << winrt::to_string(ex.message()) << std::endl;
     } catch (const std::exception& ex) {
-      std::cerr << "[just_audio_windows] Broadcast event std error: " << ex.what() << std::endl;
+      std::cerr << "[just_audio_windows_plus] Broadcast event std error: " << ex.what() << std::endl;
     } catch (...) {
-      std::cerr << "[just_audio_windows] Broadcast event unknown error" << std::endl;
+      std::cerr << "[just_audio_windows_plus] Broadcast event unknown error" << std::endl;
     }
 
     try {
       broadcastDataEvent();
     } catch (winrt::hresult_error const& ex) {
-      std::cerr << "[just_audio_windows] Broadcast data error: " << winrt::to_string(ex.message()) << std::endl;
+      std::cerr << "[just_audio_windows_plus] Broadcast data error: " << winrt::to_string(ex.message()) << std::endl;
     } catch (const std::exception& ex) {
-      std::cerr << "[just_audio_windows] Broadcast data std error: " << ex.what() << std::endl;
+      std::cerr << "[just_audio_windows_plus] Broadcast data std error: " << ex.what() << std::endl;
     } catch (...) {
-      std::cerr << "[just_audio_windows] Broadcast data unknown error" << std::endl;
+      std::cerr << "[just_audio_windows_plus] Broadcast data unknown error" << std::endl;
     }
   }
 
@@ -797,7 +867,7 @@ public:
     try {
       bufferingProgress = session.BufferingProgress();
     } catch (...) {
-      JAW_TRACE("[just_audio_windows]: BufferingProgress not available for current source. Using default value of 1.0.");
+      JAW_TRACE("[just_audio_windows_plus]: BufferingProgress not available for current source. Using default value of 1.0.");
       bufferingProgress = 1.0;
     }
 
@@ -813,7 +883,7 @@ public:
     eventData[flutter::EncodableValue("updatePosition")] = flutter::EncodableValue(position);
     eventData[flutter::EncodableValue("updateTime")] = flutter::EncodableValue(
         static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()));
-    eventData[flutter::EncodableValue("bufferedPosition")] = flutter::EncodableValue(static_cast<int64_t>(duration * bufferingProgress));
+    eventData[flutter::EncodableValue("bufferedPosition")] = flutter::EncodableValue(ClampBufferedPosition(duration, bufferingProgress));
     eventData[flutter::EncodableValue("duration")] = flutter::EncodableValue(duration);
 
     int64_t currentIndex = 0;
@@ -847,7 +917,7 @@ public:
 
     if (state == Playback::MediaPlaybackState::None) {
       // Once a source has been set, None is a gap between sources rather than idle (PR #65)
-      return source_set_ ? 1 /*loading*/ : 0 /*idle*/;
+      return source_set_.load() ? 1 /*loading*/ : 0 /*idle*/;
     } else if (state == Playback::MediaPlaybackState::Opening) {
       return 1; //loading
     } else if (state == Playback::MediaPlaybackState::Buffering) {
@@ -894,11 +964,11 @@ public:
   }
 
   int getLoopMode() const {
-    return loop_mode_;
+    return loop_mode_.load();
   }
 
   int getShuffleMode() const {
-    return shuffle_mode_;
+    return shuffle_mode_.load();
   }
 
   void seekToItem(uint32_t index) {
@@ -912,10 +982,12 @@ public:
         }
       }
     } catch (winrt::hresult_error const& ex) {
-      std::cerr << "[just_audio_windows] Failed to seek to item: " << winrt::to_string(ex.message()) << std::endl;
+      JAW_ERROR("Failed to seek to item (winrt): " << winrt::to_string(ex.message()));
     } catch (const std::exception& ex) {
-      std::cerr << "[just_audio_windows] Failed to seek to item (std): " << ex.what() << std::endl;
-    } catch (...) {}
+      JAW_ERROR("Failed to seek to item (std): " << ex.what());
+    } catch (...) {
+      JAW_ERROR("Failed to seek to item");
+    }
 
     // Do NOT call broadcastState() here (PR #57). MoveTo() is asynchronous.
     // CurrentItemChanged will call broadcastState() when the item has settled.
@@ -924,12 +996,14 @@ public:
   void seekToPosition(int64_t microseconds) {
     if (disposed_) return;
     try {
-      mediaPlayer.Position(TimeSpan(std::chrono::microseconds(microseconds)));
+      mediaPlayer.Position(winrt::Windows::Foundation::TimeSpan(std::chrono::microseconds(std::max<int64_t>(0, microseconds))));
     } catch (winrt::hresult_error const& ex) {
-      std::cerr << "[just_audio_windows] Failed to seek to position: " << winrt::to_string(ex.message()) << std::endl;
+      JAW_ERROR("Failed to seek to position (winrt): " << winrt::to_string(ex.message()));
     } catch (const std::exception& ex) {
-      std::cerr << "[just_audio_windows] Failed to seek to position (std): " << ex.what() << std::endl;
-    } catch (...) {}
+      JAW_ERROR("Failed to seek to position (std): " << ex.what());
+    } catch (...) {
+      JAW_ERROR("Failed to seek to position");
+    }
 
     broadcastState();
   }
@@ -951,18 +1025,17 @@ public:
           itemsCopy.push_back(item);
         }
 
-        for (size_t i = 0; i < shuffleOrder->size() && i < itemsCopy.size(); i++) {
-          auto item = itemsCopy.at(i);
-          int64_t insertAt = 0;
-          if (TryGetInt64(&((*shuffleOrder).at(i)), insertAt)) {
-            if (insertAt >= 0 && static_cast<size_t>(insertAt) < itemsCopy.size()) {
-              itemsCopy.erase(itemsCopy.begin() + i);
-              itemsCopy.insert(itemsCopy.begin() + insertAt, item);
-            }
-          }
+        std::vector<int64_t> order;
+        order.reserve(shuffleOrder->size());
+        for (const auto& value : *shuffleOrder) {
+          int64_t index = 0;
+          if (!TryGetInt64(&value, index)) return;
+          order.push_back(index);
         }
 
-        mediaPlaybackList.SetShuffledItems(itemsCopy);
+        std::vector<Playback::MediaPlaybackItem> reorderedItems;
+        if (!ReorderByShuffleOrder(itemsCopy, order, reorderedItems)) return;
+        mediaPlaybackList.SetShuffledItems(reorderedItems);
 
         const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(source, "children"));
         if (children) {
@@ -979,6 +1052,12 @@ public:
           setShuffleOrder(*child);
         }
       }
-    } catch (...) {}
+    } catch (const winrt::hresult_error& ex) {
+      JAW_ERROR("setShuffleOrder failed (winrt): " << winrt::to_string(ex.message()));
+    } catch (const std::exception& ex) {
+      JAW_ERROR("setShuffleOrder failed (std): " << ex.what());
+    } catch (...) {
+      JAW_ERROR("setShuffleOrder failed");
+    }
   }
 };

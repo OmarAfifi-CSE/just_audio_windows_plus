@@ -1,7 +1,8 @@
 #pragma comment(lib, "windowsapp")
 
 #include <algorithm>
-#include <atomic>
+#include <cmath>
+#include "source_model.hpp"
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -11,7 +12,11 @@
 #include <string>
 #include <vector>
 
-// This must be included before many other Windows headers.
+// This must be included before many other Windows headers. NOMINMAX keeps the
+// min/max macros away from std::min/std::max calls below.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <flutter/event_channel.h>
@@ -163,901 +168,459 @@ private:
   std::unique_ptr<flutter::EventSink<>> sink = nullptr;
 };
 
-class AudioPlayer {
-private:
-  // Read from WinRT callback threads, written from the platform thread.
-  std::atomic<bool> disposed_{false};
+class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
+ public:
+  using Result = flutter::MethodResult<EncodableValue>;
 
-  // Whether `load` has ever been handled for this player.
-  // WinRT reports MediaPlaybackState::None while a source is being swapped in.
-  // Mapping None to idle mid-load causes just_audio to abort loading in flight.
-  std::atomic<bool> source_set_{false};
-
-  // Marshals WinRT callbacks to the Flutter platform thread.
-  std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
-
-  // Liveness token for tasks posted to the platform thread.
-  std::shared_ptr<int> life_ = std::make_shared<int>(0);
-
-  void OnPlatformThread(std::function<void()> task) {
-    if (dispatcher_ && dispatcher_->on_platform_thread()) {
-      task();
-      return;
-    }
-    if (!dispatcher_ || !dispatcher_->available()) {
-      // Worker thread without an active platform dispatcher: drop the task
-      // rather than invoking Flutter channels from a non-platform thread.
-      JAW_TRACE("[just_audio_windows_plus] Dispatcher unavailable; dropping event from non-platform thread");
-      return;
-    }
-    std::weak_ptr<int> life = life_;
-    if (!dispatcher_->Post([life, task = std::move(task)]() {
-      if (life.expired()) return;
-      task();
-    })) {
-      JAW_TRACE("[just_audio_windows_plus] PostMessage failed; dropping event");
-    }
+  AudioPlayer(std::string id, flutter::BinaryMessenger* messenger,
+              std::shared_ptr<PlatformThreadDispatcher> dispatcher)
+      : id_(std::move(id)), dispatcher_(std::move(dispatcher)) {
+    player_channel_ = std::make_unique<flutter::MethodChannel<EncodableValue>>(
+        messenger, "com.ryanheise.just_audio.methods." + id_,
+        &flutter::StandardMethodCodec::GetInstance());
+    event_sink_ = std::make_unique<JustAudioEventSink>(messenger, "com.ryanheise.just_audio.events." + id_);
+    data_sink_ = std::make_unique<JustAudioEventSink>(messenger, "com.ryanheise.just_audio.data." + id_);
   }
 
-  // Tokens for event unsubscription
-  winrt::event_token playback_state_token_{};
-  winrt::event_token natural_duration_token_{};
-  winrt::event_token media_failed_token_{};
-  winrt::event_token media_ended_token_{};
-  winrt::event_token item_changed_token_{};
-  winrt::event_token item_failed_token_{};
+  // Called only after shared ownership exists. Every native callback posts
+  // before locking the weak player, so all player access and destruction are
+  // serialized on Flutter's platform thread.
+  void Initialize() {
+    std::weak_ptr<AudioPlayer> weak = shared_from_this();
+    player_channel_->SetMethodCallHandler([weak](const auto& call, auto result) {
+      if (auto player = weak.lock()) player->HandleMethodCall(call, std::move(result));
+      else result->Error("disposed", "Player has been disposed");
+    });
+    ResetNative();
+  }
 
-  // Mutex to serialize broadcastState across platform and WinRT background worker threads
-  std::mutex broadcast_mutex_;
-
-  std::atomic<int> loop_mode_{0};
-  std::atomic<int> shuffle_mode_{0};
-
-public:
-  std::string id;
-  Playback::MediaPlayer mediaPlayer{};
-  Playback::MediaPlaybackList mediaPlaybackList{};
-
-  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> player_channel_;
-  std::unique_ptr<JustAudioEventSink> event_sink_ = nullptr;
-  std::unique_ptr<JustAudioEventSink> data_sink_ = nullptr;
+  ~AudioPlayer() { Dispose(); }
+  bool HasPlayerId(const std::string& id) const { return id_ == id; }
 
   void Dispose() {
-    bool expected = false;
-    if (!disposed_.compare_exchange_strong(expected, true)) {
-      return;
-    }
-
-    // Immediately invalidate pending platform thread callbacks
-    life_.reset();
-    source_set_.store(false);
-
-    std::lock_guard<std::mutex> lock(broadcast_mutex_);
-
-    try {
-      auto session = mediaPlayer.PlaybackSession();
-      if (playback_state_token_) {
-        session.PlaybackStateChanged(playback_state_token_);
-        playback_state_token_ = {};
-      }
-      if (natural_duration_token_) {
-        session.NaturalDurationChanged(natural_duration_token_);
-        natural_duration_token_ = {};
-      }
-    } catch (...) {}
-
-    try {
-      if (media_failed_token_) {
-        mediaPlayer.MediaFailed(media_failed_token_);
-        media_failed_token_ = {};
-      }
-    } catch (...) {}
-
-    try {
-      if (media_ended_token_) {
-        mediaPlayer.MediaEnded(media_ended_token_);
-        media_ended_token_ = {};
-      }
-    } catch (...) {}
-
-    try {
-      if (item_changed_token_) {
-        mediaPlaybackList.CurrentItemChanged(item_changed_token_);
-        item_changed_token_ = {};
-      }
-    } catch (...) {}
-
-    try {
-      if (item_failed_token_) {
-        mediaPlaybackList.ItemFailed(item_failed_token_);
-        item_failed_token_ = {};
-      }
-    } catch (...) {}
-
-    if (player_channel_) {
-      player_channel_->SetMethodCallHandler(nullptr);
-    }
+    if (disposed_) return;
+    disposed_ = true;
+    ++generation_;
+    CancelLoad("Player disposed");
+    CompletePlay();
+    ReleaseNative();
+    if (player_channel_) player_channel_->SetMethodCallHandler(nullptr);
     event_sink_.reset();
     data_sink_.reset();
+  }
 
+ private:
+  std::string id_;
+  std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
+  std::unique_ptr<flutter::MethodChannel<EncodableValue>> player_channel_;
+  std::unique_ptr<JustAudioEventSink> event_sink_;
+  std::unique_ptr<JustAudioEventSink> data_sink_;
+  Playback::MediaPlayer player_{nullptr};
+  Playback::MediaPlaybackList list_{nullptr};
+  std::vector<std::function<void()>> revoke_;
+  jaw::SourceNode tree_;
+  std::vector<EncodableMap> leaves_;
+  std::unique_ptr<Result> pending_load_;
+  std::vector<std::unique_ptr<Result>> pending_play_;
+  uint64_t generation_ = 0;
+  bool disposed_ = false;
+  bool source_set_ = false;
+  bool loading_ = false;
+  bool failed_ = false;
+  bool completed_ = false;
+  bool playing_ = false;
+  bool seek_pending_ = false;
+  int64_t seek_position_ = 0;
+  int64_t requested_index_ = 0;
+  Playback::MediaPlaybackItem pending_item_{nullptr};
+  int loop_mode_ = 0;
+  int shuffle_mode_ = 0;
+  double volume_ = 1.0;
+  double speed_ = 1.0;
+
+  auto Enqueue() {
+    std::weak_ptr<AudioPlayer> weak = shared_from_this();
+    std::weak_ptr<PlatformThreadDispatcher> dispatcher = dispatcher_;
+    const auto generation = generation_;
+    return [weak, dispatcher, generation](std::function<void(AudioPlayer&)> action) {
+      if (auto queue = dispatcher.lock()) {
+        queue->Post([weak, generation, action = std::move(action)] {
+          auto owner = weak.lock();
+          if (!owner || owner->disposed_ || owner->generation_ != generation) return;
+          try { action(*owner); }
+          catch (const winrt::hresult_error& error) { owner->Fail(winrt::to_string(error.message())); }
+          catch (const jaw::ArgumentError& error) { owner->Fail(error.message); }
+          catch (...) { owner->Fail("Native playback callback failed"); }
+        });
+      }
+    };
+  }
+
+  void ReleaseNative() {
+    for (auto& revoke : revoke_) { try { revoke(); } catch (...) {} }
+    revoke_.clear();
+    if (player_) { try { player_.Close(); } catch (...) {} }
+    player_ = nullptr;
+    list_ = nullptr;
+  }
+
+  void ResetNative() {
+    ++generation_;
+    ReleaseNative();
+    player_ = Playback::MediaPlayer();
+    list_ = Playback::MediaPlaybackList();
+    player_.CommandManager().IsEnabled(false);
+    player_.AutoPlay(false);
+    player_.Volume(volume_);
+    player_.PlaybackSession().PlaybackRate(speed_);
+    list_.MaxPlayedItemsToKeepOpen(2);
+    auto enqueue = Enqueue();
+    auto session = player_.PlaybackSession();
+    auto state = session.PlaybackStateChanged([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) { owner.Broadcast(); });
+    });
+    revoke_.push_back([session, state] { session.PlaybackStateChanged(state); });
+    auto duration = session.NaturalDurationChanged([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) { owner.Broadcast(); });
+    });
+    revoke_.push_back([session, duration] { session.NaturalDurationChanged(duration); });
+    auto buffer = session.BufferingProgressChanged([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) { owner.Broadcast(); });
+    });
+    revoke_.push_back([session, buffer] { session.BufferingProgressChanged(buffer); });
+    auto download = session.DownloadProgressChanged([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) { owner.Broadcast(); });
+    });
+    revoke_.push_back([session, download] { session.DownloadProgressChanged(download); });
+    auto player = player_;
+    auto opened = player.MediaOpened([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) { owner.Opened(); });
+    });
+    revoke_.push_back([player, opened] { player.MediaOpened(opened); });
+    auto ended = player.MediaEnded([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) {
+        if (owner.loop_mode_ != 0) return;
+        owner.completed_ = true;
+        owner.Broadcast();
+        owner.CompletePlay();
+      });
+    });
+    revoke_.push_back([player, ended] { player.MediaEnded(ended); });
+    auto failed = player.MediaFailed([enqueue](auto, const Playback::MediaPlayerFailedEventArgs& args) {
+      const auto message = winrt::to_string(args.ErrorMessage());
+      enqueue([message](AudioPlayer& owner) { owner.Fail(message); });
+    });
+    revoke_.push_back([player, failed] { player.MediaFailed(failed); });
+    auto list = list_;
+    auto changed = list.CurrentItemChanged([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) { owner.completed_ = false; owner.Broadcast(); });
+    });
+    revoke_.push_back([list, changed] { list.CurrentItemChanged(changed); });
+    auto itemFailed = list.ItemFailed([enqueue](auto, const Playback::MediaPlaybackItemFailedEventArgs& args) {
+      auto item = args.Item();
+      auto message = winrt::to_string(winrt::hresult_error(args.Error().ExtendedError()).message());
+      enqueue([item, message](AudioPlayer& owner) {
+        // A prefetched future item failing must not abort a different load,
+        // but the item the pending load is waiting on must. When the initial
+        // item fails to open the list never reports it as current, so compare
+        // against the item this load designated instead of CurrentItem().
+        if (!owner.loading_ || item == owner.pending_item_) owner.Fail(message);
+      });
+    });
+    revoke_.push_back([list, itemFailed] { list.ItemFailed(itemFailed); });
+  }
+
+  void CancelLoad(const std::string& message) {
+    if (pending_load_) {
+      auto result = std::move(pending_load_);
+      result->Error("abort", message);
+    }
+  }
+  void CompletePlay() {
+    auto results = std::move(pending_play_);
+    pending_play_.clear();
+    for (auto& result : results) result->Success(EncodableMap());
+  }
+  void Opened() {
+    if (failed_ || leaves_.empty()) return;
+    loading_ = false;
+    pending_item_ = nullptr;
+    if (seek_pending_) {
+      player_.PlaybackSession().Position(TimeSpan(std::chrono::microseconds(seek_position_)));
+      seek_pending_ = false;
+    }
+    if (playing_) player_.Play();
+    Broadcast();
+    if (pending_load_) {
+      int64_t duration = 0;
+      try { duration = TimeSpanToMicroseconds(player_.PlaybackSession().NaturalDuration()); } catch (...) {}
+      auto result = std::move(pending_load_);
+      result->Success(EncodableMap{{EncodableValue("duration"), duration > 0 ? EncodableValue(duration) : EncodableValue()}});
+    }
+  }
+  void Fail(const std::string& message) {
+    if (failed_ || disposed_) return;
+    failed_ = true;
+    loading_ = false;
+    pending_item_ = nullptr;
+    completed_ = false;
+    try { Broadcast(message.empty() ? "Native media source failed" : message); } catch (...) { JAW_ERROR("Unable to broadcast playback failure"); }
+    if (pending_load_) {
+      auto result = std::move(pending_load_);
+      result->Error("1", message);
+    }
+    CompletePlay();
+  }
+
+  void ApplyModes() {
+    player_.IsLoopingEnabled(loop_mode_ == 1);
+    list_.AutoRepeatEnabled(loop_mode_ == 2);
+    list_.ShuffleEnabled(shuffle_mode_ == 1);
+    ApplyShuffle();
+  }
+  void ApplyShuffle() {
+    if (leaves_.empty()) return;
+    std::vector<size_t> order;
+    tree_.Order(order);
+    std::vector<Playback::MediaPlaybackItem> shuffled;
+    for (auto index : order) shuffled.push_back(list_.Items().GetAt(static_cast<uint32_t>(index)));
+    list_.SetShuffledItems(shuffled);
+  }
+
+  Playback::MediaPlaybackItem CreateItem(const EncodableMap& source) {
+    const auto& type = jaw::Require<std::string>(source, "type");
+    const auto& uriSource = type == "clipping" ? jaw::Require<EncodableMap>(source, "child") : source;
+    auto media = MediaSource::CreateFromUri(Uri(TO_WIDESTRING(EncodeSpacesInUri(jaw::Require<std::string>(uriSource, "uri")))));
+    if (type != "clipping") return Playback::MediaPlaybackItem(media);
+    auto start = jaw::OptionalInteger(source, "start");
+    auto end = jaw::OptionalInteger(source, "end", -1);
+    if (end >= 0) return Playback::MediaPlaybackItem(media, TimeSpan(std::chrono::microseconds(start)), TimeSpan(std::chrono::microseconds(end - start)));
+    return Playback::MediaPlaybackItem(media, TimeSpan(std::chrono::microseconds(start)));
+  }
+
+  void Load(jaw::SourceNode tree, int64_t index, int64_t position) {
+    const auto size = tree.Size();
+    if (index < 0 || (size && static_cast<uint64_t>(index) >= size) || (!size && index != 0) || position < 0)
+      throw jaw::ArgumentError{"Invalid initial index or position"};
+    std::vector<EncodableMap> leaves;
+    tree.Flatten(leaves);
+    std::vector<Playback::MediaPlaybackItem> items;
+    for (const auto& leaf : leaves) items.push_back(CreateItem(leaf));
+    ResetNative();
+    tree_ = std::move(tree);
+    leaves_ = std::move(leaves);
+    loading_ = !leaves_.empty();
+    source_set_ = true;
+    failed_ = completed_ = false;
+    seek_pending_ = true;
+    seek_position_ = position;
+    requested_index_ = index;
+    for (const auto& item : items) list_.Items().Append(item);
+    pending_item_ = items.empty() ? Playback::MediaPlaybackItem{nullptr} : items[static_cast<size_t>(index)];
+    if (!items.empty()) list_.StartingItem(items[static_cast<size_t>(index)]);
+    ApplyModes();
+    Broadcast();
+    if (!items.empty()) player_.Source(list_.as<Playback::IMediaPlaybackSource>());
+    else {
+      auto result = std::move(pending_load_);
+      if (result) result->Success(EncodableMap{{EncodableValue("duration"), EncodableValue()}});
+      CompletePlay();
+    }
+  }
+
+  void Mutate(const std::string& method, const EncodableMap& args) {
+    auto tree = tree_;
+    tree.Mutate(method, args);
+    std::vector<EncodableMap> leaves;
+    tree.Flatten(leaves);
+    auto items = list_.Items();
+    auto current = list_.CurrentItem();
+    auto position = player_.PlaybackSession().Position();
+    std::vector<bool> used(leaves_.size(), false);
+    std::vector<Playback::MediaPlaybackItem> desired;
+    for (const auto& leaf : leaves) {
+      size_t match = 0;
+      while (match < leaves_.size() && (used[match] || leaves_[match] != leaf)) ++match;
+      if (match < leaves_.size()) {
+        used[match] = true;
+        desired.push_back(items.GetAt(static_cast<uint32_t>(match)));
+      } else desired.push_back(CreateItem(leaf));
+    }
+    // Validate and construct every new item before touching the live list.
+    for (uint32_t index = 0; index < desired.size(); ++index) {
+      if (index < items.Size() && items.GetAt(index) == desired[index]) continue;
+      uint32_t found = index;
+      while (found < items.Size() && items.GetAt(found) != desired[index]) ++found;
+      if (found < items.Size()) items.RemoveAt(found);
+      items.InsertAt(index, desired[index]);
+    }
+    while (items.Size() > desired.size()) items.RemoveAtEnd();
+    tree_ = std::move(tree);
+    leaves_ = std::move(leaves);
+    // A playlist that was loaded empty never attached the list to the player;
+    // the first insertion must attach it or playback stays silent.
+    if (!leaves_.empty() && player_.Source() == nullptr) {
+      player_.Source(list_.as<Playback::IMediaPlaybackSource>());
+    }
+    ApplyModes();
+    auto found = std::find(desired.begin(), desired.end(), current);
+    if (current && found != desired.end() && list_.CurrentItem() != current) {
+      list_.MoveTo(static_cast<uint32_t>(found - desired.begin()));
+      requested_index_ = static_cast<int64_t>(found - desired.begin());
+      seek_pending_ = true;
+      seek_position_ = TimeSpanToMicroseconds(position);
+    }
+    if (leaves_.empty()) { completed_ = true; CompletePlay(); }
+    Broadcast();
+  }
+
+  void HandleMethodCall(const flutter::MethodCall<EncodableValue>& call,
+                        std::unique_ptr<Result> result) {
+    if (disposed_) return result->Error("disposed", "Player has been disposed");
+    const auto& method = call.method_name();
+    const auto* args = call.arguments() ? std::get_if<EncodableMap>(call.arguments()) : nullptr;
+    if (!args) return result->Error("argument_error", "Method arguments must be a map");
     try {
-      mediaPlayer.Close();
-    } catch (...) {}
-  }
-
-  AudioPlayer(std::string idx, flutter::BinaryMessenger* messenger,
-              std::shared_ptr<PlatformThreadDispatcher> dispatcher) {
-    id = idx;
-    dispatcher_ = std::move(dispatcher);
-
-    // Opt out of the System Media Transport Controls (SMTC)
-    mediaPlayer.CommandManager().IsEnabled(false);
-
-    // Set up channels
-    player_channel_ =
-      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-        messenger, "com.ryanheise.just_audio.methods." + idx,
-        &flutter::StandardMethodCodec::GetInstance()
-      );
-
-    player_channel_->SetMethodCallHandler(
-      [player = this](const auto& call, auto result) {
-        player->HandleMethodCall(call, std::move(result));
-      });
-
-    event_sink_ = std::make_unique<JustAudioEventSink>(messenger, "com.ryanheise.just_audio.events." + idx);
-    data_sink_ = std::make_unique<JustAudioEventSink>(messenger, "com.ryanheise.just_audio.data." + idx);
-
-    // Set up event callbacks
-    playback_state_token_ = mediaPlayer.PlaybackSession().PlaybackStateChanged([this](auto, const auto&) -> void {
-      if (disposed_) return;
-      try {
-        broadcastState();
-      } catch (...) { JAW_ERROR("PlaybackStateChanged broadcastState failed"); }
-    });
-
-    natural_duration_token_ = mediaPlayer.PlaybackSession().NaturalDurationChanged([this](auto, const auto&) -> void {
-      if (disposed_) return;
-      try {
-        broadcastState();
-      } catch (...) { JAW_ERROR("NaturalDurationChanged broadcastState failed"); }
-    });
-
-    media_failed_token_ = mediaPlayer.MediaFailed([this](auto, const Playback::MediaPlayerFailedEventArgs& args) -> void {
-      if (disposed_) return;
-      std::string errorMessage = winrt::to_string(args.ErrorMessage());
-
-      std::cerr << "[just_audio_windows_plus] Media error: " << errorMessage << std::endl;
-
-      auto code = "unknown";
-      switch (args.Error()) {
-      case Playback::MediaPlayerError::Unknown:
-        break;
-      case Playback::MediaPlayerError::Aborted:
-        code = "aborted";
-        break;
-      case Playback::MediaPlayerError::NetworkError:
-        code = "networkError";
-        break;
-      case Playback::MediaPlayerError::DecodingError:
-        code = "decodingError";
-        break;
-      case Playback::MediaPlayerError::SourceNotSupported:
-        code = "sourceNotSupported";
-        break;
-      }
-
-      OnPlatformThread([this, code, errorMessage] {
-        if (disposed_) return;
-        if (event_sink_) {
-          event_sink_->Error(code, errorMessage);
-        }
-      });
-    });
-
-    media_ended_token_ = mediaPlayer.MediaEnded([this](auto, const auto&) -> void {
-      if (disposed_) return;
-      try {
-        broadcastState();
-      } catch (...) { JAW_ERROR("MediaEnded broadcastState failed"); }
-    });
-
-    mediaPlaybackList.MaxPlayedItemsToKeepOpen(2);
-    item_changed_token_ = mediaPlaybackList.CurrentItemChanged([this](auto, const auto&) -> void {
-      if (disposed_) return;
-      try {
-        broadcastState();
-      } catch (...) { JAW_ERROR("CurrentItemChanged broadcastState failed"); }
-    });
-
-    item_failed_token_ = mediaPlaybackList.ItemFailed([this](auto, const Playback::MediaPlaybackItemFailedEventArgs& args) -> void {
-      if (disposed_) return;
-      auto error = winrt::hresult_error(args.Error().ExtendedError());
-      auto message = winrt::to_string(error.message());
-
-      std::cerr << "[just_audio_windows_plus] Item error: " << message << std::endl;
-
-      auto code = "unknown";
-      switch (args.Error().ErrorCode()) {
-      case Playback::MediaPlaybackItemErrorCode::Aborted:
-        code = "aborted";
-        break;
-      case Playback::MediaPlaybackItemErrorCode::NetworkError:
-        code = "networkError";
-        break;
-      case Playback::MediaPlaybackItemErrorCode::DecodeError:
-        code = "decodeError";
-        break;
-      case Playback::MediaPlaybackItemErrorCode::SourceNotSupportedError:
-        code = "sourceNotSupportedError";
-        break;
-      case Playback::MediaPlaybackItemErrorCode::EncryptionError:
-        code = "encryptionError";
-        break;
-      }
-
-      OnPlatformThread([this, code, message] {
-        if (disposed_) return;
-        if (event_sink_) {
-          event_sink_->Error(code, message);
-        }
-      });
-    });
-  }
-
-  ~AudioPlayer() {
-    Dispose();
-  }
-
-  bool HasPlayerId(const std::string& playerId) const {
-    return id == playerId;
-  }
-
-  void HandleMethodCall(
-    const flutter::MethodCall<flutter::EncodableValue>& method_call,
-    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result
-  ) {
-    const auto* args = std::get_if<flutter::EncodableMap>(method_call.arguments());
-
-    JAW_TRACE("[just_audio_windows_plus] Called " << method_call.method_name());
-
-    if (method_call.method_name().compare("load") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      const auto* audioSourceData = std::get_if<flutter::EncodableMap>(ValueOrNull(*args, "audioSource"));
-      if (!audioSourceData) {
-        return result->Error("load_error", "audioSource argument is missing or invalid");
-      }
-      int64_t initialPos = 0;
-      bool hasInitialPos = TryGetInt64(ValueOrNull(*args, "initialPosition"), initialPos);
-      int64_t initialIdx = 0;
-      bool hasInitialIdx = TryGetInt64(ValueOrNull(*args, "initialIndex"), initialIdx);
-
-      try {
-        loadSource(*audioSourceData);
-
-        if (hasInitialIdx && initialIdx >= 0) {
-          seekToItem(static_cast<uint32_t>(initialIdx));
-        }
-
-        if (hasInitialPos && (!hasInitialIdx || initialPos > 0)) {
-          seekToPosition(initialPos);
-        }
-
-        source_set_.store(true);
-      } catch (const winrt::hresult_error& error) {
-        source_set_.store(false);
-        JAW_ERROR("load failed (winrt): " << winrt::to_string(error.message()));
-        return result->Error("load_error", winrt::to_string(error.message()));
-      } catch (const std::exception& error) {
-        source_set_.store(false);
-        JAW_ERROR("load failed (std): " << error.what());
-        return result->Error("load_error", error.what());
-      } catch (...) {
-        source_set_.store(false);
-        JAW_ERROR("load failed: Unknown error loading the audio source");
-        return result->Error("load_error", "Unknown error loading the audio source");
-      }
-
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("play") == 0) {
-      if (!disposed_) {
-        try {
-          mediaPlayer.Play();
-        } catch (const winrt::hresult_error& ex) {
-          JAW_ERROR("play failed (winrt): " << winrt::to_string(ex.message()));
-        } catch (const std::exception& ex) {
-          JAW_ERROR("play failed (std): " << ex.what());
-        } catch (...) {
-          JAW_ERROR("play failed");
-        }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("pause") == 0) {
-      if (!disposed_) {
-        try {
-          mediaPlayer.Pause();
-        } catch (const winrt::hresult_error& ex) {
-          JAW_ERROR("pause failed (winrt): " << winrt::to_string(ex.message()));
-        } catch (const std::exception& ex) {
-          JAW_ERROR("pause failed (std): " << ex.what());
-        } catch (...) {
-          JAW_ERROR("pause failed");
-        }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("stop") == 0) {
-      if (!disposed_) {
-        try {
-          mediaPlayer.Pause();
-          seekToPosition(0);
-        } catch (const winrt::hresult_error& ex) {
-          JAW_ERROR("stop failed (winrt): " << winrt::to_string(ex.message()));
-        } catch (const std::exception& ex) {
-          JAW_ERROR("stop failed (std): " << ex.what());
-        } catch (...) {
-          JAW_ERROR("stop failed");
-        }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setVolume") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      const auto* volume = std::get_if<double>(ValueOrNull(*args, "volume"));
-      if (!disposed_ && volume) {
-        try {
-          mediaPlayer.Volume(*volume);
-        } catch (...) { JAW_ERROR("setVolume failed"); }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setSpeed") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      const auto* speed = std::get_if<double>(ValueOrNull(*args, "speed"));
-      if (!disposed_ && speed) {
-        try {
-          mediaPlayer.PlaybackSession().PlaybackRate(*speed);
-        } catch (...) { JAW_ERROR("setSpeed failed"); }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setPitch") == 0) {
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setSkipSilence") == 0) {
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setLoopMode") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      int64_t loopMode = 0;
-      if (!disposed_ && TryGetInt64(ValueOrNull(*args, "loopMode"), loopMode)) {
-        loop_mode_.store(static_cast<int>(loopMode));
-        try {
-          bool hasList = false;
-          try {
-            if (mediaPlaybackList) {
-              auto items = mediaPlaybackList.Items();
-              hasList = items && items.Size() > 0;
-            }
-          } catch (...) { JAW_TRACE("loop list state unavailable"); }
-
-          switch (loopMode) {
-          case 0: // off
-            mediaPlayer.IsLoopingEnabled(false);
-            if (mediaPlaybackList) mediaPlaybackList.AutoRepeatEnabled(false);
-            break;
-          case 1: // one
-            mediaPlayer.IsLoopingEnabled(true);
-            if (mediaPlaybackList) mediaPlaybackList.AutoRepeatEnabled(false);
-            break;
-          case 2: // all
-            if (hasList) {
-              mediaPlayer.IsLoopingEnabled(false);
-              mediaPlaybackList.AutoRepeatEnabled(true);
-            } else {
-              mediaPlayer.IsLoopingEnabled(true);
-              if (mediaPlaybackList) mediaPlaybackList.AutoRepeatEnabled(false);
-            }
-            break;
-          }
-        } catch (...) { JAW_ERROR("setLoopMode failed"); }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setShuffleMode") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      int64_t shuffleMode = 0;
-      if (!disposed_ && TryGetInt64(ValueOrNull(*args, "shuffleMode"), shuffleMode)) {
-        shuffle_mode_.store(static_cast<int>(shuffleMode));
-        try {
-          if (mediaPlaybackList) {
-            mediaPlaybackList.ShuffleEnabled(shuffleMode == 1);
-          }
-        } catch (...) { JAW_ERROR("setShuffleMode failed"); }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setShuffleOrder") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      const auto* source = std::get_if<flutter::EncodableMap>(ValueOrNull(*args, "audioSource"));
-      if (!disposed_ && source) {
-        try {
-          setShuffleOrder(*source);
-        } catch (...) { JAW_ERROR("setShuffleOrder failed"); }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("seek") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      int64_t pos = 0;
-      bool hasPos = TryGetInt64(ValueOrNull(*args, "position"), pos);
-      int64_t idx = 0;
-      bool hasIdx = TryGetInt64(ValueOrNull(*args, "index"), idx);
-
-      if (!disposed_) {
-        try {
-          if (hasIdx && idx >= 0) {
-            seekToItem(static_cast<uint32_t>(idx));
-          }
-          if (hasPos) {
-            if (!hasIdx || pos > 0) {
-              seekToPosition(pos);
-            }
-          }
-        } catch (...) { JAW_ERROR("seek failed"); }
-      }
-
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("concatenatingInsertAll") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      int64_t idx = 0;
-      bool hasIdx = TryGetInt64(ValueOrNull(*args, "index"), idx);
-      const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(*args, "children"));
-
-      if (!disposed_ && hasIdx && children) {
-        try {
-          auto items = mediaPlaybackList.Items();
-          int size = static_cast<int>(items.Size());
-          int currentIndex = static_cast<int>(idx);
-
-          if (currentIndex < 0 || currentIndex > size) {
-            return result->Error("concatenatingInsertAll_error", "index out of bounds");
-          }
-
-          for (const auto& child : *children) {
-            const auto* childMap = std::get_if<flutter::EncodableMap>(&child);
-            if (childMap) {
-              auto item = createMediaPlaybackItem(*childMap);
-              items.InsertAt(currentIndex, item);
-              currentIndex++;
-            }
-          }
-        } catch (const winrt::hresult_error& ex) {
-          return result->Error("concatenatingInsertAll_error", winrt::to_string(ex.message()));
-        } catch (const std::exception& ex) {
-          return result->Error("concatenatingInsertAll_error", ex.what());
-        } catch (...) {
-          return result->Error("concatenatingInsertAll_error", "Unknown error inserting items");
-        }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("concatenatingRemoveRange") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      int64_t start = 0;
-      bool hasStart = TryGetInt64(ValueOrNull(*args, "startIndex"), start);
-      int64_t end = 0;
-      bool hasEnd = TryGetInt64(ValueOrNull(*args, "endIndex"), end);
-
-      if (!disposed_ && hasStart && hasEnd) {
-        int startIndex = static_cast<int>(start);
-        int endIndex = static_cast<int>(end);
-
-        try {
-          auto items = mediaPlaybackList.Items();
-          int size = static_cast<int>(items.Size());
-
-          if (endIndex > startIndex && startIndex >= 0 && endIndex <= size) {
-            int count = endIndex - startIndex;
-            for (int i = 0; i < count; i++) {
-              items.RemoveAt(startIndex);
-            }
-            return result->Success(flutter::EncodableMap());
-          } else {
-            return result->Error("concatenatingRemoveRange_error", "invalid range");
-          }
-        } catch (const winrt::hresult_error& ex) {
-          return result->Error("concatenatingRemoveRange_error", winrt::to_string(ex.message()));
-        } catch (const std::exception& ex) {
-          return result->Error("concatenatingRemoveRange_error", ex.what());
-        } catch (...) {
-          return result->Error("concatenatingRemoveRange_error", "Unknown error removing items");
-        }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("concatenatingMove") == 0) {
-      if (!args) {
-        return result->Error("argument_error", "Method arguments must be a map");
-      }
-      int64_t from = 0;
-      bool hasFrom = TryGetInt64(ValueOrNull(*args, "currentIndex"), from);
-      int64_t to = 0;
-      bool hasTo = TryGetInt64(ValueOrNull(*args, "newIndex"), to);
-
-      if (!disposed_ && hasFrom && hasTo) {
-        try {
-          auto items = mediaPlaybackList.Items();
-          int size = static_cast<int>(items.Size());
-
-          int currentIndex = static_cast<int>(from);
-          int newIndex = static_cast<int>(to);
-
-          if (currentIndex < 0 || currentIndex >= size || newIndex < 0 || newIndex >= size) {
-            return result->Error("concatenatingMove_error", "index out of bounds");
-          }
-
-          if (currentIndex != newIndex) {
-            auto item = items.GetAt(currentIndex);
-            items.RemoveAt(currentIndex);
-            items.InsertAt(newIndex, item);
-          }
-        } catch (const winrt::hresult_error& ex) {
-          return result->Error("concatenatingMove_error", winrt::to_string(ex.message()));
-        } catch (const std::exception& ex) {
-          return result->Error("concatenatingMove_error", ex.what());
-        } catch (...) {
-          return result->Error("concatenatingMove_error", "Unknown error moving item");
-        }
-      }
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("setAndroidAudioAttributes") == 0 ||
-               method_call.method_name().compare("audioEffectSetEnabled") == 0 ||
-               method_call.method_name().compare("androidLoudnessEnhancerSetTargetGain") == 0 ||
-               method_call.method_name().compare("androidEqualizerGetParameters") == 0 ||
-               method_call.method_name().compare("androidEqualizerBandSetGain") == 0) {
-      result->Success(flutter::EncodableMap());
-    } else if (method_call.method_name().compare("dispose") == 0) {
-      Dispose();
-      result->Success(flutter::EncodableMap());
-    } else {
-      result->NotImplemented();
-    }
-  }
-
-  void loadSource(const flutter::EncodableMap& source) const& {
-    if (disposed_) return;
-    auto items = mediaPlaybackList.Items();
-    items.Clear();
-
-    const std::string* type = std::get_if<std::string>(ValueOrNull(source, "type"));
-    if (!type) {
-      throw std::invalid_argument("Source type is missing");
-    }
-
-    if (type->compare("concatenating") == 0) {
-      const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(source, "children"));
-      if (children) {
-        for (const auto& child : *children) {
-          const auto* childMap = std::get_if<flutter::EncodableMap>(&child);
-          if (childMap) {
-            auto item = createMediaPlaybackItem(*childMap);
-            items.Append(item);
-          }
-        }
-      }
-      mediaPlayer.Source(mediaPlaybackList.as<Playback::IMediaPlaybackSource>());
-    } else {
-      mediaPlayer.Source(createMediaPlaybackItem(source).as<Playback::IMediaPlaybackSource>());
-    }
-  }
-
-  Playback::MediaPlaybackItem createMediaPlaybackItem(const flutter::EncodableMap& source) const& {
-    const std::string* type = std::get_if<std::string>(ValueOrNull(source, "type"));
-    if (!type) {
-      throw std::invalid_argument("Source type is missing");
-    }
-
-    if (type->compare("clipping") == 0) {
-      const auto* child = std::get_if<flutter::EncodableMap>(ValueOrNull(source, "child"));
-      if (!child) {
-        throw std::invalid_argument("Clipping source child is missing");
-      }
-      auto childSource = createMediaSource(*child);
-
-      int64_t start = 0;
-      if (!TryGetInt64(ValueOrNull(source, "start"), start)) {
-        TryGetInt64(ValueOrNull(*child, "start"), start);
-      }
-
-      int64_t end = 0;
-      bool hasEnd = TryGetInt64(ValueOrNull(source, "end"), end);
-      if (!hasEnd) {
-        hasEnd = TryGetInt64(ValueOrNull(*child, "end"), end);
-      }
-
-      if (hasEnd && end > start) {
-        int64_t duration = end - start;
-        return Playback::MediaPlaybackItem(
-          childSource,
-          TimeSpan(std::chrono::microseconds(std::max<int64_t>(0, start))),
-          TimeSpan(std::chrono::microseconds(duration))
-        );
+      if (method == "load") {
+        auto tree = jaw::SourceNode::Parse(jaw::Require<EncodableMap>(*args, "audioSource"));
+        auto index = jaw::OptionalInteger(*args, "initialIndex");
+        auto position = jaw::OptionalInteger(*args, "initialPosition");
+        // Cancel the previous load even when the new request later fails.
+        CancelLoad("Replaced by a new load");
+        failed_ = false;
+        pending_load_ = std::move(result);
+        Load(std::move(tree), index, position);
+        return;
+      } else if (method == "play") {
+        player_.Play();
+        playing_ = true;
+        pending_play_.push_back(std::move(result));
+        if (completed_ || failed_) CompletePlay();
+        Broadcast();
+        return;
+      } else if (method == "pause" || method == "stop") {
+        player_.Pause();
+        playing_ = false;
+        if (method == "stop") player_.PlaybackSession().Position(TimeSpan::zero());
+        CompletePlay();
+      } else if (method == "setVolume" || method == "setSpeed") {
+        auto value = jaw::Require<double>(*args, method == "setVolume" ? "volume" : "speed");
+        if (!std::isfinite(value) || (method == "setVolume" ? value < 0 || value > 1 : value <= 0))
+          throw jaw::ArgumentError{"Invalid volume or speed"};
+        if (method == "setVolume") { player_.Volume(value); volume_ = value; }
+        else { player_.PlaybackSession().PlaybackRate(value); speed_ = value; }
+      } else if (method == "setPitch" || method == "setSkipSilence") {
+        if (method == "setPitch" && jaw::Require<double>(*args, "pitch") == 1.0)
+          return result->Success(EncodableMap());
+        if (method == "setSkipSilence" && !jaw::Require<bool>(*args, "enabled"))
+          return result->Success(EncodableMap());
+        return result->Error("unsupported", method + " is not supported on Windows");
+      } else if (method == "setLoopMode" || method == "setShuffleMode") {
+        auto mode = jaw::Integer(*args, method == "setLoopMode" ? "loopMode" : "shuffleMode");
+        if (mode < 0 || mode > (method == "setLoopMode" ? 2 : 1)) throw jaw::ArgumentError{"Invalid playback mode"};
+        if (method == "setLoopMode") loop_mode_ = static_cast<int>(mode);
+        else shuffle_mode_ = static_cast<int>(mode);
+        ApplyModes();
+      } else if (method == "setShuffleOrder") {
+        auto tree = tree_;
+        tree.UpdateShuffle(jaw::SourceNode::Parse(jaw::Require<EncodableMap>(*args, "audioSource")));
+        tree_ = std::move(tree);
+        ApplyShuffle();
+      } else if (method == "seek") {
+        auto index = jaw::OptionalInteger(*args, "index", -1);
+        auto position = jaw::OptionalInteger(*args, "position", 0);
+        if (index < -1 || (index >= 0 && static_cast<uint64_t>(index) >= leaves_.size()) || position < 0)
+          throw jaw::ArgumentError{"Invalid seek index or position"};
+        completed_ = false;
+        if (index >= 0) requested_index_ = index;
+        if (index >= 0 && list_.CurrentItemIndex() != static_cast<uint32_t>(index)) {
+          seek_pending_ = true;
+          seek_position_ = position;
+          list_.MoveTo(static_cast<uint32_t>(index));
+        } else player_.PlaybackSession().Position(TimeSpan(std::chrono::microseconds(position)));
+        if (playing_) player_.Play();
+      } else if (method == "concatenatingInsertAll" || method == "concatenatingRemoveRange" || method == "concatenatingMove") {
+        Mutate(method, *args);
+      } else if (method == "setAndroidAudioAttributes") {
+        // just_audio sends this during platform initialization on every OS.
+      } else if (method == "dispose") {
+        Dispose();
       } else {
-        return Playback::MediaPlaybackItem(
-          childSource,
-          TimeSpan(std::chrono::microseconds(std::max<int64_t>(0, start)))
-        );
+        return result->NotImplemented();
       }
-    } else {
-      return Playback::MediaPlaybackItem(createMediaSource(source));
-    }
-  }
-
-  MediaSource createMediaSource(const flutter::EncodableMap& source) const {
-    const std::string* type = std::get_if<std::string>(ValueOrNull(source, "type"));
-    if (!type) {
-      throw std::invalid_argument("MediaSource type is missing");
-    }
-    if (type->compare("progressive") == 0 || type->compare("dash") == 0 || type->compare("hls") == 0) {
-      const auto* uri = std::get_if<std::string>(ValueOrNull(source, "uri"));
-      if (!uri) {
-        throw std::invalid_argument("MediaSource uri is missing");
-      }
-      return MediaSource::CreateFromUri(
-        Uri(TO_WIDESTRING(EncodeSpacesInUri(*uri)))
-      );
-    } else {
-      throw std::invalid_argument("Source is unsupported or can not be nested: " + *type);
-    }
-  }
-
-  void broadcastState() {
-    if (disposed_) return;
-    std::lock_guard<std::mutex> lock(broadcast_mutex_);
-    if (disposed_) return;
-
-    try {
-      broadcastPlaybackEvent();
-    } catch (winrt::hresult_error const& ex) {
-      std::cerr << "[just_audio_windows_plus] Broadcast event error: " << winrt::to_string(ex.message()) << std::endl;
-    } catch (const std::exception& ex) {
-      std::cerr << "[just_audio_windows_plus] Broadcast event std error: " << ex.what() << std::endl;
+      if (!disposed_) Broadcast();
+      result->Success(EncodableMap());
+    } catch (const jaw::ArgumentError& error) {
+      if (result) result->Error("argument_error", error.message);
+      else Fail(error.message);
+    } catch (const winrt::hresult_error& error) {
+      if (result) result->Error("native_error", winrt::to_string(error.message()));
+      else Fail(winrt::to_string(error.message()));
+    } catch (const std::exception& error) {
+      if (result) result->Error("native_error", error.what());
+      else Fail(error.what());
     } catch (...) {
-      std::cerr << "[just_audio_windows_plus] Broadcast event unknown error" << std::endl;
-    }
-
-    try {
-      broadcastDataEvent();
-    } catch (winrt::hresult_error const& ex) {
-      std::cerr << "[just_audio_windows_plus] Broadcast data error: " << winrt::to_string(ex.message()) << std::endl;
-    } catch (const std::exception& ex) {
-      std::cerr << "[just_audio_windows_plus] Broadcast data std error: " << ex.what() << std::endl;
-    } catch (...) {
-      std::cerr << "[just_audio_windows_plus] Broadcast data unknown error" << std::endl;
+      if (result) result->Error("native_error", "Unknown native playback error");
+      else Fail("Unknown native playback error");
     }
   }
 
-  void broadcastPlaybackEvent() {
-    if (disposed_) return;
-    auto session = mediaPlayer.PlaybackSession();
-    if (!session) return;
-
-    auto eventData = flutter::EncodableMap();
-
-    // NaturalDuration can throw when session is transitioning between items (PR #57)
+  int ProcessingState() const {
+    if (failed_ || !source_set_) return 0;
+    if (completed_) return 4;
+    if (loading_) return 1;
+    if (leaves_.empty()) return 3;
+    auto state = player_.PlaybackSession().PlaybackState();
+    if (state == Playback::MediaPlaybackState::Opening) return 1;
+    if (state == Playback::MediaPlaybackState::Buffering) return 2;
+    return 3;
+  }
+  void Broadcast(const std::string& error = {}) {
+    if (disposed_ || !player_) return;
+    auto session = player_.PlaybackSession();
+    // WinRT properties can be temporarily unavailable while opening or
+    // switching items. A missing progress sample must not fail playback.
     int64_t duration = 0;
-    try {
-      duration = TimeSpanToMicroseconds(session.NaturalDuration());
-    } catch (...) {
-      duration = 0;
-    }
-
-    auto now = std::chrono::system_clock::now();
-
-    // Try to get BufferingProgress or default to 1.0 (PR #64)
-    double bufferingProgress = 1.0;
-    try {
-      bufferingProgress = session.BufferingProgress();
-    } catch (...) {
-      JAW_TRACE("[just_audio_windows_plus]: BufferingProgress not available for current source. Using default value of 1.0.");
-      bufferingProgress = 1.0;
-    }
-
-    // Position can throw when transitioning between items (PR #57)
     int64_t position = 0;
-    try {
-      position = TimeSpanToMicroseconds(session.Position());
-    } catch (...) {
-      position = 0;
+    double progress = 0.0;
+    try { duration = TimeSpanToMicroseconds(session.NaturalDuration()); } catch (...) {}
+    try { position = TimeSpanToMicroseconds(session.Position()); } catch (...) {}
+    try { progress = session.DownloadProgress(); } catch (...) {}
+    // CurrentItemIndex is UINT32_MAX or a default 0 before the list settles.
+    // Reporting a spurious index there briefly desynchronizes Dart; while the
+    // initial load is pending, the requested index is the truthful one.
+    const auto rawIndex = list_.CurrentItemIndex();
+    const bool indexKnown = rawIndex != UINT32_MAX && static_cast<size_t>(rawIndex) < leaves_.size();
+    const auto index = indexKnown ? static_cast<size_t>(rawIndex) : size_t{0};
+    if (indexKnown) {
+      const auto& leaf = leaves_[index];
+      const auto& source = jaw::Require<std::string>(leaf, "type") == "clipping" ? jaw::Require<EncodableMap>(leaf, "child") : leaf;
+      const auto& uri = jaw::Require<std::string>(source, "uri");
+      if (uri.compare(0, 5, "file:") == 0) progress = 1.0;
     }
-
-    eventData[flutter::EncodableValue("processingState")] = flutter::EncodableValue(processingState(session.PlaybackState()));
-    eventData[flutter::EncodableValue("updatePosition")] = flutter::EncodableValue(position);
-    eventData[flutter::EncodableValue("updateTime")] = flutter::EncodableValue(
-        static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()));
-    eventData[flutter::EncodableValue("bufferedPosition")] = flutter::EncodableValue(ClampBufferedPosition(duration, bufferingProgress));
-    eventData[flutter::EncodableValue("duration")] = flutter::EncodableValue(duration);
-
-    int64_t currentIndex = 0;
-    try {
-      if (mediaPlaybackList) {
-        auto items = mediaPlaybackList.Items();
-        if (items && items.Size() > 0) {
-          uint32_t idx = mediaPlaybackList.CurrentItemIndex();
-          if (idx != 4294967295) { // UINT32_MAX - 1
-            currentIndex = idx;
-          }
-        }
-      }
-    } catch (...) {
-      currentIndex = 0;
+    int64_t reportedIndex = -1;
+    if (loading_) reportedIndex = static_cast<int64_t>(requested_index_);
+    else if (indexKnown) reportedIndex = static_cast<int64_t>(rawIndex);
+    auto now = std::chrono::system_clock::now();
+    EncodableMap event{
+      {EncodableValue("processingState"), EncodableValue(ProcessingState())},
+      {EncodableValue("updatePosition"), EncodableValue(position)},
+      {EncodableValue("updateTime"), EncodableValue(static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()))},
+      {EncodableValue("bufferedPosition"), EncodableValue((std::max)(position, ClampBufferedPosition(duration, progress)))},
+      {EncodableValue("duration"), duration > 0 ? EncodableValue(duration) : EncodableValue()},
+      {EncodableValue("currentIndex"), reportedIndex >= 0 ? EncodableValue(reportedIndex) : EncodableValue()}
+    };
+    if (!error.empty()) {
+      event[EncodableValue("errorCode")] = EncodableValue(int32_t{1});
+      event[EncodableValue("errorMessage")] = EncodableValue(error);
     }
-    eventData[flutter::EncodableValue("currentIndex")] = flutter::EncodableValue(currentIndex);
-
-    // Defer channel write onto Flutter platform thread (PR #63)
-    OnPlatformThread([this, eventData = std::move(eventData)] {
-      if (disposed_) return;
-      if (event_sink_) {
-        event_sink_->Success(eventData);
-      }
+    if (event_sink_) event_sink_->Success(event);
+    if (data_sink_) data_sink_->Success(EncodableMap{
+      {EncodableValue("playing"), EncodableValue(playing_)},
+      {EncodableValue("volume"), EncodableValue(volume_)},
+      {EncodableValue("speed"), EncodableValue(speed_)},
+      {EncodableValue("loopMode"), EncodableValue(loop_mode_)},
+      {EncodableValue("shuffleMode"), EncodableValue(shuffle_mode_)}
     });
-  }
-
-  int processingState(Playback::MediaPlaybackState state) {
-    if (disposed_) return 0;
-    auto session = mediaPlayer.PlaybackSession();
-
-    if (state == Playback::MediaPlaybackState::None) {
-      // Once a source has been set, None is a gap between sources rather than idle (PR #65)
-      return source_set_.load() ? 1 /*loading*/ : 0 /*idle*/;
-    } else if (state == Playback::MediaPlaybackState::Opening) {
-      return 1; //loading
-    } else if (state == Playback::MediaPlaybackState::Buffering) {
-      return 2; //buffering
-    }
-
-    // Guard duration check defensively against transitions (PR #57, PR #66)
-    int64_t dur = 0;
-    int64_t pos = 0;
-    try {
-      dur = session.NaturalDuration().count();
-      pos = session.Position().count();
-    } catch (...) {
-      dur = 0;
-      pos = 0;
-    }
-
-    if (dur > 0 && pos >= dur) {
-      return 4; //completed
-    }
-    return 3; //ready
-  }
-
-  void broadcastDataEvent() {
-    if (disposed_) return;
-    auto session = mediaPlayer.PlaybackSession();
-    auto eventData = flutter::EncodableMap();
-
-    auto isPlaying = session.PlaybackState() == Playback::MediaPlaybackState::Playing;
-
-    eventData[flutter::EncodableValue("playing")] = flutter::EncodableValue(isPlaying);
-    eventData[flutter::EncodableValue("volume")] = flutter::EncodableValue(mediaPlayer.Volume());
-    eventData[flutter::EncodableValue("speed")] = flutter::EncodableValue(session.PlaybackRate());
-    eventData[flutter::EncodableValue("loopMode")] = flutter::EncodableValue(getLoopMode());
-    eventData[flutter::EncodableValue("shuffleMode")] = flutter::EncodableValue(getShuffleMode());
-
-    // Defer channel write onto Flutter platform thread (PR #63)
-    OnPlatformThread([this, eventData = std::move(eventData)] {
-      if (disposed_) return;
-      if (data_sink_) {
-        data_sink_->Success(eventData);
-      }
-    });
-  }
-
-  int getLoopMode() const {
-    return loop_mode_.load();
-  }
-
-  int getShuffleMode() const {
-    return shuffle_mode_.load();
-  }
-
-  void seekToItem(uint32_t index) {
-    if (disposed_) return;
-
-    try {
-      if (mediaPlaybackList) {
-        auto items = mediaPlaybackList.Items();
-        if (items && index < items.Size()) {
-          mediaPlaybackList.MoveTo(index);
-        }
-      }
-    } catch (winrt::hresult_error const& ex) {
-      JAW_ERROR("Failed to seek to item (winrt): " << winrt::to_string(ex.message()));
-    } catch (const std::exception& ex) {
-      JAW_ERROR("Failed to seek to item (std): " << ex.what());
-    } catch (...) {
-      JAW_ERROR("Failed to seek to item");
-    }
-
-    // Do NOT call broadcastState() here (PR #57). MoveTo() is asynchronous.
-    // CurrentItemChanged will call broadcastState() when the item has settled.
-  }
-
-  void seekToPosition(int64_t microseconds) {
-    if (disposed_) return;
-    try {
-      mediaPlayer.Position(winrt::Windows::Foundation::TimeSpan(std::chrono::microseconds(std::max<int64_t>(0, microseconds))));
-    } catch (winrt::hresult_error const& ex) {
-      JAW_ERROR("Failed to seek to position (winrt): " << winrt::to_string(ex.message()));
-    } catch (const std::exception& ex) {
-      JAW_ERROR("Failed to seek to position (std): " << ex.what());
-    } catch (...) {
-      JAW_ERROR("Failed to seek to position");
-    }
-
-    broadcastState();
-  }
-
-  void setShuffleOrder(const flutter::EncodableMap& source) {
-    if (disposed_) return;
-    try {
-      const std::string* type = std::get_if<std::string>(ValueOrNull(source, "type"));
-      if (!type) return;
-
-      if (type->compare("concatenating") == 0) {
-        const auto* shuffleOrder = std::get_if<flutter::EncodableList>(ValueOrNull(source, "shuffleOrder"));
-        if (!shuffleOrder) return;
-
-        if (!mediaPlaybackList) return;
-
-        std::vector<Playback::MediaPlaybackItem> itemsCopy {};
-        for (auto item : mediaPlaybackList.Items()) {
-          itemsCopy.push_back(item);
-        }
-
-        std::vector<int64_t> order;
-        order.reserve(shuffleOrder->size());
-        for (const auto& value : *shuffleOrder) {
-          int64_t index = 0;
-          if (!TryGetInt64(&value, index)) return;
-          order.push_back(index);
-        }
-
-        std::vector<Playback::MediaPlaybackItem> reorderedItems;
-        if (!ReorderByShuffleOrder(itemsCopy, order, reorderedItems)) return;
-        mediaPlaybackList.SetShuffledItems(reorderedItems);
-
-        const auto* children = std::get_if<flutter::EncodableList>(ValueOrNull(source, "children"));
-        if (children) {
-          for (const auto& child : *children) {
-            const auto* childMap = std::get_if<flutter::EncodableMap>(&child);
-            if (childMap) {
-              setShuffleOrder(*childMap);
-            }
-          }
-        }
-      } else if (type->compare("looping") == 0) {
-        const auto* child = std::get_if<flutter::EncodableMap>(ValueOrNull(source, "child"));
-        if (child) {
-          setShuffleOrder(*child);
-        }
-      }
-    } catch (const winrt::hresult_error& ex) {
-      JAW_ERROR("setShuffleOrder failed (winrt): " << winrt::to_string(ex.message()));
-    } catch (const std::exception& ex) {
-      JAW_ERROR("setShuffleOrder failed (std): " << ex.what());
-    } catch (...) {
-      JAW_ERROR("setShuffleOrder failed");
-    }
   }
 };

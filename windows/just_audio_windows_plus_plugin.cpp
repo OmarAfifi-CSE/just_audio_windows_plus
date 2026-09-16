@@ -23,12 +23,6 @@ using flutter::EncodableValue;
 
 namespace {
 
-std::vector<std::unique_ptr<AudioPlayer>> players_;
-std::mutex players_mutex_;
-
-// Marshals WinRT event callbacks onto Flutter's platform UI thread.
-std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
-
 class JustAudioWindowsPlusPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
@@ -38,6 +32,9 @@ class JustAudioWindowsPlusPlugin : public flutter::Plugin {
   virtual ~JustAudioWindowsPlusPlugin();
 
  private:
+  std::vector<std::shared_ptr<AudioPlayer>> players_;
+  std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
+  std::unique_ptr<flutter::MethodChannel<EncodableValue>> channel_;
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue> &method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result,
@@ -54,8 +51,6 @@ void JustAudioWindowsPlusPlugin::RegisterWithRegistrar(
           registrar->messenger(), "com.ryanheise.just_audio.methods",
           &flutter::StandardMethodCodec::GetInstance());
 
-  dispatcher_ = std::make_shared<PlatformThreadDispatcher>();
-
   auto plugin = std::make_unique<JustAudioWindowsPlusPlugin>();
 
   channel->SetMethodCallHandler(
@@ -63,19 +58,18 @@ void JustAudioWindowsPlusPlugin::RegisterWithRegistrar(
         plugin_pointer->HandleMethodCall(call, std::move(result), messenger_pointer);
       });
 
+  plugin->channel_ = std::move(channel);
   registrar->AddPlugin(std::move(plugin));
 }
 
-JustAudioWindowsPlusPlugin::JustAudioWindowsPlusPlugin() {}
+JustAudioWindowsPlusPlugin::JustAudioWindowsPlusPlugin()
+    : dispatcher_(std::make_shared<PlatformThreadDispatcher>()) {}
 
 JustAudioWindowsPlusPlugin::~JustAudioWindowsPlusPlugin() {
-  std::vector<std::unique_ptr<AudioPlayer>> old_players;
-  {
-    std::lock_guard<std::mutex> lock(players_mutex_);
-    old_players = std::move(players_);
-  }
-  // old_players destruct safely outside the lock while dispatcher_ is still active
-  old_players.clear();
+  if (channel_) channel_->SetMethodCallHandler(nullptr);
+  for (auto& player : players_) player->Dispose();
+  players_.clear();
+  dispatcher_->Shutdown();
   dispatcher_.reset();
 }
 
@@ -83,14 +77,14 @@ void JustAudioWindowsPlusPlugin::HandleMethodCall(
     const flutter::MethodCall<flutter::EncodableValue> &method_call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result,
     flutter::BinaryMessenger* messenger) {
-  const auto* args = std::get_if<flutter::EncodableMap>(method_call.arguments());
+  const auto* args = method_call.arguments() ? std::get_if<flutter::EncodableMap>(method_call.arguments()) : nullptr;
   if (!args) {
     result->Error("argument_error", "arguments must be a map");
     return;
   }
 
   if (method_call.method_name().compare("init") == 0) {
-    const auto* id = std::get_if<std::string>(ValueOrNull(*args, "id"));
+    const auto* id = jaw::Get<std::string>(*args, "id");
     if (!id) {
       return result->Error("argument_error", "id argument missing");
     }
@@ -98,11 +92,9 @@ void JustAudioWindowsPlusPlugin::HandleMethodCall(
     DisposePlayerByPlayerId(*id);
 
     try {
-      auto player = std::make_unique<AudioPlayer>(*id, messenger, dispatcher_);
-      {
-        std::lock_guard<std::mutex> lock(players_mutex_);
-        players_.push_back(std::move(player));
-      }
+      auto player = std::make_shared<AudioPlayer>(*id, messenger, dispatcher_);
+      player->Initialize();
+      players_.push_back(std::move(player));
       result->Success(flutter::EncodableMap());
     } catch (const winrt::hresult_error& error) {
       return result->Error("init_error", winrt::to_string(error.message()));
@@ -112,19 +104,15 @@ void JustAudioWindowsPlusPlugin::HandleMethodCall(
       return result->Error("init_error", "Unknown error initializing player");
     }
   } else if (method_call.method_name().compare("disposePlayer") == 0) {
-    const auto* id = std::get_if<std::string>(ValueOrNull(*args, "id"));
+    const auto* id = jaw::Get<std::string>(*args, "id");
     if (!id) {
       return result->Error("argument_error", "id argument missing");
     }
     DisposePlayerByPlayerId(*id);
     result->Success(flutter::EncodableMap());
   } else if (method_call.method_name().compare("disposeAllPlayers") == 0) {
-    std::vector<std::unique_ptr<AudioPlayer>> old_players;
-    {
-      std::lock_guard<std::mutex> lock(players_mutex_);
-      old_players = std::move(players_);
-    }
-    // old_players destruct safely outside the players_mutex_ lock
+    for (auto& player : players_) player->Dispose();
+    players_.clear();
     result->Success(flutter::EncodableMap());
   } else {
     result->NotImplemented();
@@ -132,18 +120,13 @@ void JustAudioWindowsPlusPlugin::HandleMethodCall(
 }
 
 void JustAudioWindowsPlusPlugin::DisposePlayerByPlayerId(const std::string& id) {
-  std::unique_ptr<AudioPlayer> player_to_dispose = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(players_mutex_);
-    for (auto it = begin(players_); it != end(players_); ++it) {
-      if ((*it)->HasPlayerId(id)) {
-        player_to_dispose = std::move(*it);
-        players_.erase(it);
-        break;
-      }
+  for (auto it = players_.begin(); it != players_.end(); ++it) {
+    if ((*it)->HasPlayerId(id)) {
+      (*it)->Dispose();
+      players_.erase(it);
+      return;
     }
   }
-  // player_to_dispose destructs safely outside the players_mutex_ lock
 }
 
 }  // namespace

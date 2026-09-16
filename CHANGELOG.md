@@ -1,3 +1,15 @@
+## 0.5.0
+
+* **Reliable Source Loading & Error Reporting**: Pending loads now complete with the real duration or an actionable failure, including replacement and disposal; asynchronous playback failures surface through the playback event contract, so missing files and HTTP 404s no longer leave callers waiting.
+* **`play()` Completion Semantics**: `await play()` now resolves when playback pauses or finishes instead of returning immediately, and `playing` stays true across buffering and completion until `pause()`, matching `just_audio`'s contract.
+* **Teardown & Ownership Hardening**: Native WinRT callbacks capture weak owners and post to the platform thread, and player ownership is scoped to the plugin registration; disposal settles pending loads and play futures exactly once.
+* **Loop, Nested Sources & Shuffle Correctness**: `LoopMode.all` configured before loading now advances through every item; nested concatenating/looping/clipping source trees load and mutate correctly; shuffle orders supplied with loads and mutations are honored in automatic progression.
+* **Native Error Integrity & Unsupported Operations**: Exception messages are owned so text survives to Dart unchanged; pitch and silence skipping return errors for unsupported values instead of silently succeeding, and direct custom request headers fail clearly with guidance toward `just_audio`'s proxy.
+* **Empty-Playlist Mutations Attach the Source**: Inserting into a playlist that was loaded empty now attaches the playback list to the player, so the first added item actually plays instead of staying silent.
+* **Truthful Index Broadcasting**: While the initial load is pending, the requested initial index is reported instead of a transient native default, and an unknown current index is reported as null rather than a spurious `0`, keeping Dart's sequence state synchronized from the first event.
+* **Windows Playback Regression Runner**: Added `tool/test_windows.ps1` executing 25 playback scenarios against the compiled Windows plugin on real channels (Debug and Release), plus native C++ helper tests and CI execution.
+* **Honest Documentation**: Documented codec/deployment requirements, unsupported operations, and verification limits; removed unverified crash-free, gapless, and frame-rate claims.
+
 ## 0.4.0
 
 * **Linear Permutation Shuffle Engine**: Replaced quadratic index-shifting with an $O(N)$ permutation mapping (`ReorderByShuffleOrder`). Validates bounds, enforces element uniqueness, and rejects malformed shuffle arrays without corrupting playlist state.

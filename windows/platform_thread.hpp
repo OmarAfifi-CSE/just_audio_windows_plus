@@ -54,7 +54,12 @@ class PlatformThreadDispatcher {
     SetWindowLongPtrW(window_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   }
 
-  ~PlatformThreadDispatcher() {
+  ~PlatformThreadDispatcher() { Shutdown(); }
+
+  // Explicitly called on the platform thread before engine teardown. A worker
+  // may briefly retain this dispatcher while posting; its later destruction
+  // must not attempt to destroy a window owned by another thread.
+  void Shutdown() {
     HWND window = nullptr;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -87,14 +92,12 @@ class PlatformThreadDispatcher {
   }
 
   bool Post(std::function<void()> task) {
-    HWND window = nullptr;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      window = window_;
-      if (!window) return false;
-      tasks_.push_back(std::move(task));
-    }
-    return PostMessageW(window, kRunTasks, 0, 0) != FALSE;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!window_) return false;
+    tasks_.push_back(std::move(task));
+    if (PostMessageW(window_, kRunTasks, 0, 0)) return true;
+    tasks_.pop_back();
+    return false;
   }
 
  private:
@@ -124,6 +127,7 @@ class PlatformThreadDispatcher {
       tasks.swap(tasks_);
     }
     for (auto& task : tasks) {
+      if (!available()) break;
       task();
     }
   }

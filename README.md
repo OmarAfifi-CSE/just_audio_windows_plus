@@ -1,50 +1,98 @@
+<div align="center">
+
 # just_audio_windows_plus
 
-[![pub package](https://img.shields.io/pub/v/just_audio_windows_plus.svg)](https://pub.dev/packages/just_audio_windows_plus)
-[![pub points](https://img.shields.io/pub/points/just_audio_windows_plus?color=2E8B57&label=pub%20points)](https://pub.dev/packages/just_audio_windows_plus/score)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D7.svg)](https://flutter.dev)
-[![Standard: C++20](https://img.shields.io/badge/C%2B%2B-20-blueviolet.svg)](https://en.cppreference.com/w/cpp/20)
-[![GitHub](https://img.shields.io/badge/GitHub-OmarAfifi--CSE-181717?style=flat&logo=github&logoColor=white)](https://github.com/OmarAfifi-CSE)
+### Production-Grade Native Windows Audio Engine for Flutter
 
-**High-performance, seamless native audio player for Flutter on Windows desktop.**
-
-Play internet audio streams, local audio files, sound effects, and gapless playlists effortlessly in your Flutter desktop applications. Powered by native Windows Media Foundation (`WinRT Windows.Media.Playback.MediaPlayer`) and modern C++20, `just_audio_windows_plus` gives you a fast, reliable, and production-grade audio experience right out of the box.
+[![pub package](https://img.shields.io/pub/v/just_audio_windows_plus.svg?color=blue&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus)
+[![pub points](https://img.shields.io/pub/points/just_audio_windows_plus?color=2E8B57&label=pub%20points&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus/score)
+[![CI Quality Gate](https://img.shields.io/github/actions/workflow/status/OmarAfifi-CSE/just_audio_windows_plus/ci.yml?branch=master&label=CI&style=flat-square)](https://github.com/OmarAfifi-CSE/just_audio_windows_plus/actions/workflows/ci.yml)
+[![Tests: 132 Passing](https://img.shields.io/badge/Tests-132%20Passing-brightgreen?style=flat-square)](test/README.md)
+[![Standard: C++20](https://img.shields.io/badge/Standard-C%2B%2B20-blueviolet?style=flat-square)](https://en.cppreference.com/w/cpp/20)
+[![Platform: Windows 10 | 11](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D7?style=flat-square)](https://flutter.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/OmarAfifi-CSE/just_audio_windows_plus/main/screenshots/desktop_player_showcase.png" alt="just_audio_windows_plus Showcase" width="500"/>
+  <b>Seamless, crash-free, high-fidelity audio playback for Flutter desktop applications.</b><br>
+  Built on native Windows Media Foundation (WinRT) with an ultra-reliable C++20 core and complete drop-in compatibility with <a href="https://pub.dev/packages/just_audio">just_audio</a>.
 </p>
 
----
+<p align="center">
+  <a href="#-why-just_audio_windows_plus"><b>Why This Package?</b></a> •
+  <a href="#-architectural-comparison"><b>Comparison</b></a> •
+  <a href="#-quickstart-30-seconds"><b>Quickstart</b></a> •
+  <a href="#-ready-to-copy-player-widget"><b>Ready Widget</b></a> •
+  <a href="#-practical-recipes"><b>Code Recipes</b></a> •
+  <a href="#-under-the-hood-built-for-desktop-reliability"><b>Under the Hood</b></a> •
+  <a href="#-frequently-asked-questions-faq"><b>FAQ</b></a>
+</p>
 
-## 📋 Windows Platform Feature Matrix
+<p align="center">
+  <img src="screenshots/desktop_player_showcase.png" alt="just_audio_windows_plus modern desktop audio player UI" width="500" style="border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.15);" />
+</p>
 
-| Feature | Windows Support | Notes / Underlying Architecture |
-|---|:---:|---|
-| **Audio from URL** | ✅ | HTTP / HTTPS progressive streams |
-| **Audio from File** | ✅ | Absolute local disk paths with Unicode handling |
-| **Audio from Asset** | ✅ | Flutter bundled package assets |
-| **HLS Streams (`.m3u8`)** | ✅ | Native Media Foundation HLS tag support |
-| **DASH Streams (`.mpd`)** | ✅ | Windows native DASH profile playback |
-| **Gapless Playlists** | ✅ | Native `MediaPlaybackList` with zero transition delay |
-| **Play / Pause / Seek** | ✅ | Frame-accurate seeking with reactive position stream |
-| **Buffering Progress** | ✅ | Real-time `bufferingProgress` event stream |
-| **Variable Playback Speed** | ✅ | 0.5x to 2.0x pitch-corrected playback |
-| **Volume Adjustment** | ✅ | 0.0 (silent) to 1.0 (full scale) |
-| **Looping & Shuffling** | ✅ | `LoopMode.off`, `one`, `all` & custom shuffle algorithms |
-| **Error Handling** | ✅ | Structured `PlayerException` mapped from WinRT HRESULT |
-| **Permutation Shuffling** | ✅ | **Exclusive to Plus**: $O(N)$ bounds-checked shuffle engine |
-| **Buffering NaN Protection** | ✅ | **Exclusive to Plus**: Guaranteed bounded buffer progress |
-| **UI Platform Thread Safety** | ✅ | **Exclusive to Plus**: Marshals to UI thread (`HWND_MESSAGE`) |
-| **Modern C++20 Toolchain** | ✅ | **Exclusive to Plus**: Seamless MSVC 14.40+ / VS 2026 build |
-| **Atomic Player Lifecycle** | ✅ | **Exclusive to Plus**: Zero `0xC0000005` access violations |
-| **Clean SMTC Separation** | ✅ | **Exclusive to Plus**: Conflict-free with `audio_service` |
+</div>
 
 ---
 
-## ⚡ 30-Second Quickstart
+## ⚡ Why `just_audio_windows_plus`?
 
-Using `just_audio_windows_plus` is as simple as it gets. You use the standard, beloved `just_audio` API:
+Building desktop audio on Windows has notoriously tricky edge cases: WinRT background threadpool callbacks, asynchronous COM item lifetimes, and memory race conditions during fast disposal or page switches. 
+
+The original, archived `just_audio_windows` (v0.2.3) suffered from unhandled thread warnings, access violation crashes (`0xC0000005`), infinite hanging loads on 404s, and broken playlist looping.
+
+`just_audio_windows_plus` was re-engineered from the ground up to provide an uncompromising, rock-solid native foundation:
+
+- 🚀 **Zero External Dependencies**: Powered directly by native Windows Media Foundation (`WinRT Windows.Media.Playback.MediaPlayer`). Zero third-party DLLs to bundle, zero FFmpeg dependencies, and zero external installers required.
+- 🧵 **Zero Platform Thread Warnings**: All background WinRT callbacks are safely marshalled onto Flutter's UI platform thread through a dedicated Win32 message window (`HWND_MESSAGE`). No dropped callbacks, no engine warnings.
+- 🛡️ **Bulletproof Lifecycle & Disposal**: Native callbacks utilize `std::weak_ptr` with atomic generation tracking. Disposing of a player mid-playback, fast page switching, or triggering hot restart never causes native crashes.
+- 🎯 **Strict `just_audio` Contract Compliance**: `await player.setFilePath(...)` resolves with the exact microsecond duration or throws a catchable `PlayerException` on missing files / 404s (no infinite hangs). `await player.play()` stays active until pause or completion.
+- 🔀 **True Playlist & Shuffle Architecture**: Native recursive source tree supports nested concatenating, looping, and clipping sources with $O(N)$ permutation-safe shuffling and dynamic mutations (even starting from an empty playlist).
+- 🧪 **132 Automated Verification Tests**: Verified by **25 real Windows end-to-end playback integration scenarios** (both Debug and Release), **39 native C++ unit tests**, and **68 Dart contract tests** running in automated CI.
+
+---
+
+## 🏛️ Architectural Comparison
+
+See how `just_audio_windows_plus` compares to the legacy, archived `just_audio_windows` (0.2.3):
+
+| Capability / Reliability Dimension | Legacy `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.0) |
+|---|:---:|:---:|
+| **Platform Thread Marshalling** | ❌ Background Threadpool (Engine logs non-platform thread warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`) serialization** |
+| **C++ Toolchain Standard** | ❌ C++17 (Breaks on modern MSVC 14.51 / VS 2026 `STL1011`) | ✅ **Modern C++20 Core (Clean `/W4 /WX` on VS 2026)** |
+| **Callback Lifetime & Teardown** | ❌ Raw `this` captured in WinRT handlers (Fatal `0xC0000005` on disposal) | ✅ **`std::weak_ptr` + Generation Token validation** |
+| **Failed Load Resolution** | ❌ Returns premature success; pending loads hang forever on 404 | ✅ **Settles immediately with exact duration or `PlayerException`** |
+| **`await play()` Semantics** | ❌ Returns prematurely after ~12 ms before track plays | ✅ **Resolves upon pause or end-of-file per `just_audio` contract** |
+| **Full Playlist Looping (`LoopMode.all`)** | ❌ Repeats track 1 indefinitely when set before load | ✅ **`ApplyModes()` guarantees complete playlist cycling** |
+| **Nested Audio Sources** | ❌ Rejects nested concatenating & looping sources with corrupt errors | ✅ **Recursive Source Tree model with ID-targeted mutations** |
+| **Dynamic Playlist Insertion** | ❌ Adding items to an initially empty playlist remains silent | ✅ **Automatically attaches WinRT source upon first insertion** |
+| **Playlist Shuffling Engine** | ❌ $O(N^2)$ erase-insert loop that corrupts track indices | ✅ **$O(N)$ Permutation-safe mapping (`native_utils.hpp`)** |
+| **Live Buffering Clamping** | ❌ Unchecked float (`NaN`/`Inf` crashes Dart assertions) | ✅ **Guarded `ClampBufferedPosition` with `std::isfinite`** |
+| **Native Error Text Integrity** | ❌ Temporary `c_str()` dangling pointer (`FormatException`) | ✅ **Owned `ArgumentError` strings preserve UTF-8 text** |
+| **System Media Transport Controls** | ❌ Automatically hijacks OS lockscreen with blank overlays | ✅ **De-conflicted SMTC (Integrate cleanly with `audio_service`)** |
+| **Multi-Engine Isolation** | ❌ Namespace globals share state across Flutter engines | ✅ **Instance-scoped players and dispatchers** |
+| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **25 Real Playback Scenarios + 39 C++ Tests + 68 Dart Tests** |
+
+---
+
+## 🚀 Quickstart (30 Seconds)
+
+### 1. Add Dependencies
+
+Add `just_audio` and `just_audio_windows_plus` to your `pubspec.yaml`:
+
+```yaml
+dependencies:
+  flutter:
+    sdk: flutter
+  just_audio: ^0.10.6
+  just_audio_windows_plus: ^0.5.0
+```
+
+> [!TIP]
+> **Zero Platform Configuration Needed:** Flutter automatically detects and registers `just_audio_windows_plus` on Windows. You can use standard [`just_audio`](https://pub.dev/packages/just_audio) APIs without any platform-conditional boilerplate!
+
+### 2. Basic Playback Example
 
 ```dart
 import 'package:flutter/material.dart';
@@ -54,112 +102,29 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final player = AudioPlayer();
-  
-  // Play an internet audio stream or local file in two lines
-  await player.setUrl('https://server10.mp3quran.net/minsh/001.mp3');
-  await player.play();
+  try {
+    // Stream remote HTTP/HTTPS audio, play local files, or bundled assets
+    await player.setUrl('https://server10.mp3quran.net/minsh/001.mp3');
+    
+    // Play until user pauses or track finishes
+    await player.play();
+  } finally {
+    await player.dispose();
+  }
 }
 ```
 
 ---
 
-## 🌟 What You Can Build
+## 📦 Complete Ready-to-Copy Player Widget
 
-- 🔊 **All Modern Audio Formats**: Native support for MP3, AAC, WAV, FLAC, M4A, as well as live HTTP/HTTPS, HLS, and DASH streams.
-- 📑 **Dynamic Playlists**: Next/previous track navigation, shuffling, looping, and gapless transitions with `ConcatenatingAudioSource`.
-- ⏩ **Smooth Seeking & Scrubbing**: High-precision timeline scrubbing with reactive position streams.
-- 🎚️ **Fine-Grained Controls**: Variable playback speed (0.5x to 2.0x), volume adjustment, looping modes, and silence skipping.
-- 🖥️ **Native Windows Architecture**: Uses Windows Media Foundation built directly into Windows 10 and 11. Zero extra DLLs or runtimes to package.
-- 🛡️ **Rock-Solid Stability**: Fully hardened with thread-safe mutexes and platform-thread dispatching to ensure your desktop app never stutters, locks up, or crashes.
-
----
-
-## 📦 Installation
-
-### Path 1: For New Flutter Projects
-
-Add `just_audio_windows_plus` alongside `just_audio` in your `pubspec.yaml`:
-
-```yaml
-dependencies:
-  flutter:
-    sdk: flutter
-  just_audio: ^0.10.6 # Full compatibility with ^0.10.x and ^0.9.x
-  just_audio_windows_plus: ^0.4.0
-```
-
-### Path 2: Instant Upgrade for Existing Projects
-
-If your project already uses `just_audio`, simply add `just_audio_windows_plus` to your `dependencies`. Flutter's federated plugin system automatically selects `just_audio_windows_plus` as the Windows platform implementation, giving you full C++20 reliability and zero crashes with **zero changes to your existing Dart code**:
-
-```yaml
-dependencies:
-  just_audio: ^0.10.6
-  just_audio_windows_plus: ^0.4.0
-```
-
-> **Tip (Testing via Git):**
-> If you wish to track the latest unreleased developments from GitHub:
-> ```yaml
-> dependencies:
->   just_audio_windows_plus:
->     git:
->       url: https://github.com/OmarAfifi-CSE/just_audio_windows_plus.git
-> ```
-
----
-
-## 🛠️ Code Recipes & Examples
-
-### 1. Continuous Playlists & Track Navigation
-
-Easily queue multiple tracks, navigate between recordings, and listen for index changes:
+Here is a full, production-ready desktop audio bar widget featuring an interactive seek slider, real-time position/duration timestamps (`01:23 / 03:45`), buffering spinner, and play/pause controls:
 
 ```dart
-// Works natively with modern just_audio 0.10.x setAudioSources
-await player.setAudioSources([
-  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/001.mp3')),
-  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/112.mp3')),
-  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/113.mp3')),
-]);
-await player.play();
+import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart';
 
-// Smoothly skip tracks without UI stutter
-await player.seekToNext();
-await player.seekToPrevious();
-```
-
-### 2. Local Audio Files & Flutter Assets
-
-```dart
-// Local file paths (handles spaces and international Unicode characters cleanly)
-await player.setFilePath(r'C:\Audio\Recordings\01 Surah Al-Fatihah.mp3');
-
-// Flutter bundled assets
-await player.setAsset('assets/audio/notification.wav');
-```
-
-### 3. Playback Controls & Speed
-
-```dart
-// Volume control (0.0 silent to 1.0 full)
-await player.setVolume(0.8);
-
-// Variable playback speed (e.g. 0.75x, 1.25x, 1.5x)
-await player.setSpeed(1.25);
-
-// Loop modes (off, one, all)
-await player.setLoopMode(LoopMode.all);
-
-// Shuffle mode
-await player.setShuffleModeEnabled(true);
-```
-
-### 4. Complete Ready-to-Copy Player Widget
-
-Here is a full Flutter widget featuring a seek bar, real-time position timestamps (`01:23 / 03:45`), and play/pause controls:
-
-```dart
+/// A production-ready desktop audio player bar widget.
 class DesktopAudioBar extends StatelessWidget {
   final AudioPlayer player;
 
@@ -174,47 +139,94 @@ class DesktopAudioBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<Duration?>(
-      stream: player.durationStream,
-      builder: (context, durationSnapshot) {
-        final duration = durationSnapshot.data ?? Duration.zero;
+    final theme = Theme.of(context);
 
-        return StreamBuilder<Duration>(
-          stream: player.positionStream,
-          builder: (context, positionSnapshot) {
-            var position = positionSnapshot.data ?? Duration.zero;
-            if (position > duration) position = duration;
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: StreamBuilder<Duration?>(
+          stream: player.durationStream,
+          builder: (context, durationSnapshot) {
+            final duration = durationSnapshot.data ?? Duration.zero;
 
-            return Row(
-              children: [
-                StreamBuilder<PlayerState>(
-                  stream: player.playerStateStream,
-                  builder: (context, snapshot) {
-                    final isPlaying = snapshot.data?.playing ?? false;
-                    return IconButton(
-                      icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled),
-                      iconSize: 42,
-                      onPressed: () => isPlaying ? player.pause() : player.play(),
-                    );
-                  },
-                ),
-                Text(_formatDuration(position)),
-                Expanded(
-                  child: Slider(
-                    min: 0.0,
-                    max: duration.inMilliseconds.toDouble(),
-                    value: position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble()),
-                    onChanged: (value) {
-                      player.seek(Duration(milliseconds: value.round()));
-                    },
-                  ),
-                ),
-                Text(_formatDuration(duration)),
-              ],
+            return StreamBuilder<Duration>(
+              stream: player.positionStream,
+              builder: (context, positionSnapshot) {
+                var position = positionSnapshot.data ?? Duration.zero;
+                if (position > duration) position = duration;
+
+                return Row(
+                  children: [
+                    // Play / Pause / Buffering Indicator
+                    StreamBuilder<PlayerState>(
+                      stream: player.playerStateStream,
+                      builder: (context, snapshot) {
+                        final isPlaying = snapshot.data?.playing ?? false;
+                        final processingState = snapshot.data?.processingState;
+                        final isBusy = processingState == ProcessingState.loading ||
+                            processingState == ProcessingState.buffering;
+
+                        if (isBusy) {
+                          return const Padding(
+                            padding: EdgeInsets.all(8.0),
+                            child: SizedBox(
+                              width: 32,
+                              height: 32,
+                              child: CircularProgressIndicator(strokeWidth: 2.5),
+                            ),
+                          );
+                        }
+
+                        return IconButton(
+                          icon: Icon(
+                            isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled,
+                            color: theme.colorScheme.primary,
+                          ),
+                          iconSize: 44,
+                          tooltip: isPlaying ? 'Pause' : 'Play',
+                          onPressed: () => isPlaying ? player.pause() : player.play(),
+                        );
+                      },
+                    ),
+                    const SizedBox(width: 12),
+
+                    // Current Position
+                    Text(
+                      _formatDuration(position),
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(width: 8),
+
+                    // Interactive Seek Scrubber
+                    Expanded(
+                      child: Slider(
+                        min: 0.0,
+                        max: duration.inMilliseconds.toDouble(),
+                        value: position.inMilliseconds.toDouble().clamp(
+                              0.0,
+                              duration.inMilliseconds.toDouble(),
+                            ),
+                        onChanged: (value) {
+                          player.seek(Duration(milliseconds: value.round()));
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+
+                    // Total Duration
+                    Text(
+                      _formatDuration(duration),
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                );
+              },
             );
           },
-        );
-      },
+        ),
+      ),
     );
   }
 }
@@ -222,68 +234,154 @@ class DesktopAudioBar extends StatelessWidget {
 
 ---
 
-## 🔬 Under the Hood: Built for Production Reliability
+## 💡 Practical Recipes
 
-Developing desktop audio on Windows requires handling native COM/WinRT events and background threads gracefully. `just_audio_windows_plus` was engineered specifically to address common desktop audio pitfalls:
+### 1. Local Audio Files & Bundled Assets
 
-- **Platform Thread Dispatcher (`platform_thread.hpp`)**: WinRT Media Foundation delivers playback callbacks on background threadpools. We marshal these events onto Flutter's UI platform thread via a dedicated Win32 message window (`HWND_MESSAGE`). This ensures zero non-platform thread engine warnings and zero dropped events.
-- **Thread-Safe Mutex & Concurrency Hardening**: All internal player registries and event sinks are synchronized with `std::mutex` and atomic variables (`std::atomic<bool> source_set_`, `loop_mode_`, `shuffle_mode_`), preventing data races and Access Violations (`0xC0000005`) during rapid track changes, hot-reload, and teardown.
-- **Permutation-Safe Playlist Shuffling (`native_utils.hpp`)**: Employs a linear $O(N)$ permutation mapping (`ReorderByShuffleOrder`) with strict validation to prevent index corruption, out-of-bounds access, and duplicate item insertion during playlist shuffles.
-- **Live-Stream Buffering Defense**: Guards progress calculations with `ClampBufferedPosition`, preventing `NaN` and out-of-range floats from triggering assertion failures in Dart during dynamic network changes.
-- **Modern C++20 Standard**: Built with `CMAKE_CXX_STANDARD 20`, ensuring seamless compilation with Visual Studio 2026 and modern MSVC toolchains (eliminating `STL1011` coroutine deprecation errors).
-- **Clean System Media Separation**: Disables automatic lockscreen flyout hijacking (`mediaPlayer.CommandManager().IsEnabled(false)`), allowing apps to optionally manage media keys via [`audio_service`](https://pub.dev/packages/audio_service) without conflicts.
-- **Diagnostic Native Logging**: Replaced silent empty catch blocks with structured `JAW_ERROR` diagnostics, while tracing logs are gated behind `JAW_TRACE` under `#ifndef NDEBUG`, preventing console flood in production.
+```dart
+// Local file paths (Windows paths with spaces and Unicode are safely handled)
+await player.setFilePath(r'C:\Audio\Recordings\01 Surah Al-Fatihah.mp3');
+
+// Bundled Flutter assets (declared under flutter.assets in pubspec.yaml)
+await player.setAsset('assets/audio/notification.mp3');
+```
+
+### 2. Seamless Playlists, Looping & Shuffle
+
+```dart
+// Build a playlist
+final playlist = ConcatenatingAudioSource(children: [
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/001.mp3')),
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/112.mp3')),
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/113.mp3')),
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/114.mp3')),
+]);
+
+await player.setAudioSource(playlist, initialIndex: 0);
+
+// Loop modes: LoopMode.off, LoopMode.one (repeat track), LoopMode.all (repeat playlist)
+await player.setLoopMode(LoopMode.all);
+
+// Enable randomized playback with permutation safety
+await player.setShuffleModeEnabled(true);
+
+// Next / Previous navigation
+await player.seekToNext();
+await player.seekToPrevious();
+
+// Dynamic mutations: add or remove items at runtime
+await playlist.add(AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/110.mp3')));
+```
+
+### 3. Volume, Speed & Seeking
+
+```dart
+// Volume: 0.0 (silent) to 1.0 (maximum)
+await player.setVolume(0.85);
+
+// Variable playback speed: e.g. 0.75x, 1.25x, 1.5x, 2.0x
+await player.setSpeed(1.25);
+
+// Seek by time or playlist track index
+await player.seek(const Duration(minutes: 1, seconds: 30));
+await player.seek(Duration.zero, index: 2); // Jump directly to track 2
+```
+
+### 4. Robust Error Handling
+
+```dart
+try {
+  await player.setUrl('https://example.invalid/audio.mp3');
+} on PlayerException catch (e) {
+  // Immediately catches 404 Not Found, unsupported codecs, or missing native files
+  debugPrint('Native load failed with code: ${e.code}, message: ${e.message}');
+}
+
+// Listen for background decoding errors or network stream dropouts
+player.errorStream.listen((error) {
+  debugPrint('Asynchronous playback error: $error');
+});
+```
 
 ---
 
-## 🏛️ Architectural Comparison
+## 🔬 Under the Hood: Built for Desktop Reliability
 
-How `just_audio_windows_plus` compares to legacy implementations:
+Developing audio on Windows desktop requires interfacing directly with COM and WinRT Media Foundation. `just_audio_windows_plus` is designed with strict engineering governance:
 
-| Feature / Capability | Legacy `just_audio_windows` (0.2.3) | `just_audio_windows_plus` |
-|---|:---:|:---:|
-| **Platform Thread Dispatching** | ❌ Background Threadpool (Engine warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`)** |
-| **C++ Toolchain Standard** | ❌ C++17 (Fails on MSVC 14.51 / VS 2026 `STL1011`) | ✅ **C++20 Native Coroutine Standard** |
-| **Concurrency & Thread Safety** | ❌ Unguarded raw pointers (Fatal `0xC0000005`) | ✅ **`std::mutex` + `std::atomic` Lifecycle** |
-| **Playlist Shuffling Engine** | ❌ $O(N^2)$ erase-insert (corrupts indices) | ✅ **$O(N)$ Permutation-Safe Engine (`native_utils.hpp`)** |
-| **Buffering Progress Defense** | ❌ Unchecked float (`NaN`/`Inf` crashes Dart) | ✅ **Guarded `ClampBufferedPosition`** |
-| **Playlist Rapid Skipping** | ❌ Freezes BufferingProgress / Crashes | ✅ **Defensive WinRT Probing (Zero-Crash)** |
-| **Source Swap Handling** | ❌ Falsely signals `idle` mid-swap (Aborts load) | ✅ **Protected `source_set_` State Guard** |
-| **Initial Load Duration** | ❌ Falsely evaluates `0 == 0` as completed | ✅ **`NaturalDuration > 0` Gating** |
-| **Exception Resiliency** | ❌ `catch(char*)` escapes to `std::terminate` | ✅ **Structured `hresult_error` & `std::exception`** |
-| **Native Error Visibility** | ❌ Empty `catch(...)` (Silent runtime failure) | ✅ **Diagnostic `JAW_ERROR` Logging** |
-| **System Media Flyout** | ❌ Hijacks lockscreen with blank info | ✅ **Clean Separation (De-conflicted SMTC)** |
-| **Release Log Overhead** | ❌ Floods terminal on every volume/seek | ✅ **Silent Release Builds (`JAW_TRACE`)** |
-| **Maintenance Status** | ⚠️ Abandoned (>2 years without pub update) | 🚀 **Actively Maintained & Production Ready** |
+1. **Win32 Message-Only Window Dispatcher (`platform_thread.hpp`)**:
+   WinRT fires media notifications on background ThreadPool threads. Writing directly to Flutter's binary messenger from background threads violates Flutter's threading model and causes dropped events. We marshal every event through an `HWND_MESSAGE` Win32 message window, ensuring 100% of event callbacks execute cleanly on Flutter's UI platform thread.
+
+2. **Weak Ownership & Atomic Generation Tokens (`player.hpp`)**:
+   `AudioPlayer` extends `std::enable_shared_from_this<AudioPlayer>`. Native callbacks capture a `std::weak_ptr<AudioPlayer>` paired with an atomic `generation_` counter. If the player is disposed while WinRT callbacks are in-flight, they expire harmlessly without touching freed memory.
+
+3. **Permutation-Safe Playlist Shuffling (`native_utils.hpp`)**:
+   Instead of destructive in-place random shifting, `just_audio_windows_plus` implements a strict $O(N)$ permutation mapping (`ReorderByShuffleOrder`). It asserts that the shuffle order is a true mathematical permutation without duplicates or out-of-bounds indices, synchronizing cleanly with WinRT's `SetShuffledItems`.
+
+4. **Floating-Point NaN & Infinity Shielding**:
+   All volume, speed, and buffering inputs/outputs are guarded by `std::isfinite` and `ClampBufferedPosition`, preventing corrupt float values from crashing Dart's runtime assertions during live streaming.
+
+5. **Clean System Media Transport Controls (SMTC) Separation**:
+   By explicitly disabling WinRT's automatic command manager (`mediaPlayer.CommandManager().IsEnabled(false)`), `just_audio_windows_plus` prevents blank OS lockscreen overlays and allows applications to manage hardware keyboard media keys seamlessly via [`audio_service`](https://pub.dev/packages/audio_service).
+
+---
+
+## 🧪 Comprehensive Verification & Quality Gates
+
+Every capability in this package is proven by automated tests. We believe in **evidence over assertions**:
+
+```powershell
+# 1. Run full Dart contract suite (68 tests)
+flutter test
+
+# 2. Run native C++ source tree and dispatcher unit tests (39 tests)
+powershell -ExecutionPolicy Bypass tool/test_native.ps1
+
+# 3. Run real Windows playback regression suite against the compiled plugin (25 scenarios)
+powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode debug
+powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode release
+```
+
+### Summary of Verified Scenarios:
+- **Exact Microsecond Duration**: Asserts 3-second WAV fixture returns exact 3000ms duration from `load`.
+- **Missing Files & HTTP 404**: Asserts immediate resolution with `PlayerException` (no hanging Futures).
+- **`play()` Completion Semantics**: Asserts Future completes at pause or EOF; preserves `playing=true`.
+- **Full Playlist Looping**: Asserts exact track progression `0 → 1 → 0` under `LoopMode.all`.
+- **Deterministic Shuffle**: Asserts custom shuffle sequence `0 → 2 → 1` in automatic playback.
+- **Cross-Item Seeking**: Asserts seeking to a non-zero position across different items preserves exact timeline offset.
+- **Dynamic Playlist Insertion**: Asserts adding items to an initially empty playlist attaches source and plays.
+- **Nested Source Trees**: Concatenating within concatenating, finite looping expansion, and ID mutations.
+- **Disposal Under Heavy Stress**: Rapid create/load/seek/dispose iterations with callbacks in-flight without crash.
+- **Concurrent Independent Players**: Multiple simultaneous players running concurrently without cross-talk.
+
+*(See [test/README.md](test/README.md) for full instructions and coverage scope)*.
 
 ---
 
 ## ❓ Frequently Asked Questions (FAQ)
 
-#### Q: Do my users need to install any external C++ runtimes or codecs?
-**No.** `just_audio_windows_plus` uses Windows Media Foundation (`WinRT Windows.Media.Playback.MediaPlayer`), which is pre-installed on every Windows 10 and 11 machine. It compiles directly into your Flutter executable.
+#### Q: Do users need to install external runtimes, FFmpeg, or codecs?
+**No.** `just_audio_windows_plus` relies on Windows Media Foundation (`WinRT Windows.Media.Playback.MediaPlayer`), which is pre-installed on every Windows 10 and 11 machine. It compiles directly into your Flutter executable with zero external runtime requirements.
 
 #### Q: What audio formats are supported?
-All standard formats supported by Windows Media Foundation: MP3, AAC, WAV, FLAC, M4A, WMA, as well as HTTP/HTTPS, HLS, and DASH streams.
+All standard formats supported natively by Windows Media Foundation on the user's system: MP3, AAC, WAV, FLAC, M4A, WMA, as well as HTTP/HTTPS, HLS, and DASH streams. Format support follows the media codecs available on the host Windows installation.
 
 #### Q: Can I run multiple `AudioPlayer` instances simultaneously?
-**Yes.** All internal state, channels, and event sinks are fully isolated and thread-safe per player instance.
+**Yes.** All state, method channels, and event sinks are strictly isolated per player instance. You can run multiple players simultaneously (e.g. background music + voice-over) with zero interference.
 
 #### Q: How do I handle background audio or keyboard media keys?
-Because `just_audio_windows_plus` cleanly opts out of automatic SMTC hijacking, you can use [`audio_service`](https://pub.dev/packages/audio_service) to manage keyboard media keys and OS lock screen widgets with complete control.
+Because `just_audio_windows_plus` cleanly disables automatic WinRT SMTC hijacking, you can use [`audio_service`](https://pub.dev/packages/audio_service) to manage OS lockscreen widgets and keyboard media keys with total control.
 
----
+#### Q: Can I pass custom HTTP headers with audio URLs?
+Direct native URL playback in WinRT does not support custom request headers. For audio sources requiring authentication tokens or custom headers, route them through `just_audio`'s built-in local HTTP proxy (`AudioSource.uri(uri, headers: {...})`).
 
-## 🧪 Stress Benchmarks & Verification
-
-- **100+ Rapid Consecutive Seeks & Track Switches**: 0 crashes, 0 unhandled COM exceptions, 0 deadlocks.
-- **Resource Leak Audits**: Verified complete destruction of WinRT objects and Flutter channels upon player disposal.
-- **120 FPS Zero-Jank Conformance**: Background media notifications do not block the Windows UI message loop.
+#### Q: Why do `setPitch` and `setSkipSilence` return errors?
+WinRT's native media player does not support independent pitch shifting or silence skipping in this architecture. Rather than silently pretending to succeed, the engine follows a fail-fast design and returns an explicit `unsupported` error for non-default values.
 
 ---
 
 ## 📜 Author & License
 
 - Engineered, hardened, and maintained by [Omar Afifi](https://omar-afifi.com/) ([@OmarAfifi-CSE](https://github.com/OmarAfifi-CSE)).
-- Foundational heritage credited to **Bruno D'Luka** and **Ryan Heise**.
+- Foundational architectural heritage credited to **Bruno D'Luka** and **Ryan Heise**.
 - Licensed under the **MIT License**. See [LICENSE](LICENSE) for details.

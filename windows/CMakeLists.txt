@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 set(PROJECT_NAME "just_audio_windows_plus")
 project(${PROJECT_NAME} LANGUAGES CXX)
-set(CPPWINRT_VERSION 2.0.210806.1)
 # C++20, not 17, because of a header C++/WinRT chooses on our behalf. Built as
 # C++17 it includes <experimental/coroutine>; built as C++20 it includes the
 # standard <coroutine>. MSVC 14.51, which ships with Visual Studio 2026, turned
@@ -23,6 +22,7 @@ add_library(${PLUGIN_NAME} SHARED
   "platform_thread.hpp"
   "player.hpp"
   "native_utils.hpp"
+  "source_model.hpp"
 )
 apply_standard_settings(${PLUGIN_NAME})
 set_target_properties(${PLUGIN_NAME} PROPERTIES
@@ -40,12 +40,16 @@ set(just_audio_windows_plus_bundled_libraries
 
 # === Tests ===
 
-if (${include_${PROJECT_NAME}_tests})
+option(include_just_audio_windows_plus_tests "Build native audio unit tests" OFF)
+if (include_just_audio_windows_plus_tests)
   set(TEST_RUNNER "${PROJECT_NAME}_test")
   enable_testing()
 
   # Download googletest
   include(FetchContent)
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
   FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/release-1.11.0.zip
@@ -57,16 +61,23 @@ if (${include_${PROJECT_NAME}_tests})
 
   FetchContent_MakeAvailable(googletest)
 
-  # uri_utils.hpp is a header-only, WinRT-free helper, so the test binary
-  # needs no plugin sources or special Windows libraries.
+  # Exercise production parsing and the actual Win32 dispatcher, not a mock
+  # implementation of their algorithms. Playback tests use the Flutter runner.
   add_executable(${TEST_RUNNER}
     test/uri_utils_test.cpp
+    test/source_model_test.cpp
+    test/platform_thread_test.cpp
   )
   apply_standard_settings(${TEST_RUNNER})
+  # source_model.hpp includes flutter/encodable_value.h, which lives in the
+  # cpp_client_wrapper include directory owned by the wrapper target, not the
+  # `flutter` target, so both INTERFACE_INCLUDE_DIRECTORIES are needed.
   target_include_directories(${TEST_RUNNER} PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main)
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "$<TARGET_PROPERTY:flutter,INTERFACE_INCLUDE_DIRECTORIES>"
+    "$<TARGET_PROPERTY:flutter_wrapper_plugin,INTERFACE_INCLUDE_DIRECTORIES>")
+  target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main user32)
 
   include(GoogleTest)
-  gtest_discover_tests(${TEST_RUNNER})
+  gtest_discover_tests(${TEST_RUNNER} DISCOVERY_TIMEOUT 30)
 endif()

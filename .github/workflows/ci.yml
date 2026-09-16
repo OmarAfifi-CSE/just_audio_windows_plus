@@ -30,6 +30,9 @@ jobs:
       - name: Run unit test suite
         run: flutter test --coverage
 
+      - name: Validate dry-run publish
+        run: dart pub publish --dry-run
+
       - name: Install example app dependencies
         run: |
           cd example
@@ -57,6 +60,3 @@ jobs:
           name: windows-native-test-results
           path: |
             example/build/windows/x64/plugins/just_audio_windows_plus/Testing/
-
-      - name: Validate dry-run publish
-        run: dart pub publish --dry-run

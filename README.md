@@ -6,7 +6,7 @@
 
 [![pub package](https://img.shields.io/pub/v/just_audio_windows_plus.svg?color=blue&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus)
 [![pub points](https://img.shields.io/pub/points/just_audio_windows_plus?color=2E8B57&label=pub%20points&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus/score)
-[![CI Quality Gate](https://img.shields.io/github/actions/workflow/status/OmarAfifi-CSE/just_audio_windows_plus/ci.yml?branch=master&label=CI&style=flat-square)](https://github.com/OmarAfifi-CSE/just_audio_windows_plus/actions/workflows/ci.yml)
+[![CI Quality Gate](https://img.shields.io/github/actions/workflow/status/OmarAfifi-CSE/just_audio_windows_plus/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/OmarAfifi-CSE/just_audio_windows_plus/actions/workflows/ci.yml)
 [![Tests: 132 Passing](https://img.shields.io/badge/Tests-132%20Passing-brightgreen?style=flat-square)](test/README.md)
 [![Standard: C++20](https://img.shields.io/badge/Standard-C%2B%2B20-blueviolet?style=flat-square)](https://en.cppreference.com/w/cpp/20)
 [![Platform: Windows 10 | 11](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D7?style=flat-square)](https://flutter.dev)
@@ -39,7 +39,7 @@
 
 Building desktop audio on Windows has notoriously tricky edge cases: WinRT background threadpool callbacks, asynchronous COM item lifetimes, and memory race conditions during fast disposal or page switches. 
 
-The original, archived `just_audio_windows` (v0.2.3) suffered from unhandled thread warnings, access violation crashes (`0xC0000005`), infinite hanging loads on 404s, and broken playlist looping.
+The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandled thread warnings, access violation crashes (`0xC0000005`), infinite hanging loads on 404s, and broken playlist looping.
 
 `just_audio_windows_plus` was re-engineered from the ground up to provide an uncompromising, rock-solid native foundation:
 
@@ -54,9 +54,9 @@ The original, archived `just_audio_windows` (v0.2.3) suffered from unhandled thr
 
 ## 🏛️ Architectural Comparison
 
-See how `just_audio_windows_plus` compares to the legacy, archived `just_audio_windows` (0.2.3):
+See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 
-| Capability / Reliability Dimension | Legacy `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.0) |
+| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.1) |
 |---|:---:|:---:|
 | **Platform Thread Marshalling** | ❌ Background Threadpool (Engine logs non-platform thread warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`) serialization** |
 | **C++ Toolchain Standard** | ❌ C++17 (Breaks on modern MSVC 14.51 / VS 2026 `STL1011`) | ✅ **Modern C++20 Core (Clean `/W4 /WX` on VS 2026)** |
@@ -86,7 +86,7 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.10.6
-  just_audio_windows_plus: ^0.5.0
+  just_audio_windows_plus: ^0.5.1
 ```
 
 > [!TIP]

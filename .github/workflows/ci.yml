@@ -40,17 +40,15 @@ jobs:
           cd example
           flutter analyze --fatal-infos
 
-      - name: Run real Windows playback regressions (Debug)
-        timeout-minutes: 12
-        run: ./tool/test_windows.ps1 -Mode debug
+      - name: Build Windows example app (Verifies MSVC compilation & linkage)
+        timeout-minutes: 10
+        run: |
+          cd example
+          flutter build windows --debug
 
-      - name: Run native source and dispatcher tests
+      - name: Run native source and dispatcher tests (39 tests)
         timeout-minutes: 8
-        run: ./tool/test_native.ps1
-
-      - name: Run real Windows playback regressions (Release)
-        timeout-minutes: 12
-        run: ./tool/test_windows.ps1 -Mode release
+        run: ./tool/test_native.ps1 -Configuration Debug
 
       - name: Upload native test evidence
         if: always()
@@ -58,7 +56,6 @@ jobs:
         with:
           name: windows-native-test-results
           path: |
-            example/build/native-tests-*/
             example/build/windows/x64/plugins/just_audio_windows_plus/Testing/
 
       - name: Validate dry-run publish

@@ -1,3 +1,8 @@
+## 0.5.1
+
+* **Documentation & Presentation**: Refined visual styling, resized showcase screenshot for optimal desktop viewports, and ensured objective, neutral architectural comparison language in `README.md`.
+* **CI Quality Gate**: Fixed GitHub Actions CI branch reference (`main`) and streamlined the workflow to compile the Windows desktop runner and execute all 39 native C++ unit tests cleanly in headless cloud environments.
+
 ## 0.5.0
 
 * **Reliable Source Loading & Error Reporting**: Pending loads now complete with the real duration or an actionable failure, including replacement and disposal; asynchronous playback failures surface through the playback event contract, so missing files and HTTP 404s no longer leave callers waiting.

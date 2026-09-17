@@ -231,6 +231,9 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   bool playing_ = false;
   bool seek_pending_ = false;
   int64_t seek_position_ = 0;
+  bool seek_in_progress_ = false;
+  int64_t target_seek_position_ = 0;
+  std::chrono::steady_clock::time_point seek_deadline_{};
   int64_t requested_index_ = 0;
   Playback::MediaPlaybackItem pending_item_{nullptr};
   int loop_mode_ = 0;
@@ -292,6 +295,13 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       enqueue([](AudioPlayer& owner) { owner.Broadcast(); });
     });
     revoke_.push_back([session, download] { session.DownloadProgressChanged(download); });
+    auto seekCompleted = session.SeekCompleted([enqueue](auto, auto) {
+      enqueue([](AudioPlayer& owner) {
+        owner.seek_in_progress_ = false;
+        owner.Broadcast();
+      });
+    });
+    revoke_.push_back([session, seekCompleted] { session.SeekCompleted(seekCompleted); });
     auto player = player_;
     auto opened = player.MediaOpened([enqueue](auto, auto) {
       enqueue([](AudioPlayer& owner) { owner.Opened(); });
@@ -341,11 +351,26 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     pending_play_.clear();
     for (auto& result : results) result->Success(EncodableMap());
   }
+  // Marks a seek as in flight. WinRT applies Position() asynchronously, so
+  // until SeekCompleted fires the session may still report the pre-seek
+  // position (or zero on a fresh item). While the flag is set, Broadcast()
+  // reports the target position instead of the stale one. A deadline guards
+  // against SeekCompleted never firing (item switch, pipeline abort, failure).
+  void BeginSeek(int64_t position) {
+    seek_in_progress_ = true;
+    target_seek_position_ = position;
+    seek_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  }
+  void ClearSeek() {
+    seek_in_progress_ = false;
+    target_seek_position_ = 0;
+  }
   void Opened() {
     if (failed_ || leaves_.empty()) return;
     loading_ = false;
     pending_item_ = nullptr;
     if (seek_pending_) {
+      BeginSeek(seek_position_);
       player_.PlaybackSession().Position(TimeSpan(std::chrono::microseconds(seek_position_)));
       seek_pending_ = false;
     }
@@ -364,6 +389,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     loading_ = false;
     pending_item_ = nullptr;
     completed_ = false;
+    ClearSeek();
     try { Broadcast(message.empty() ? "Native media source failed" : message); } catch (...) { JAW_ERROR("Unable to broadcast playback failure"); }
     if (pending_load_) {
       auto result = std::move(pending_load_);
@@ -407,6 +433,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     std::vector<Playback::MediaPlaybackItem> items;
     for (const auto& leaf : leaves) items.push_back(CreateItem(leaf));
     ResetNative();
+    ClearSeek();
     tree_ = std::move(tree);
     leaves_ = std::move(leaves);
     loading_ = !leaves_.empty();
@@ -536,8 +563,15 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
         if (index >= 0 && list_.CurrentItemIndex() != static_cast<uint32_t>(index)) {
           seek_pending_ = true;
           seek_position_ = position;
+          // CurrentItemChanged fires as soon as MoveTo switches items and
+          // broadcasts a zero position for the fresh item; keep Broadcast()
+          // reporting the requested position until Opened() lands the seek.
+          BeginSeek(position);
           list_.MoveTo(static_cast<uint32_t>(index));
-        } else player_.PlaybackSession().Position(TimeSpan(std::chrono::microseconds(position)));
+        } else {
+          BeginSeek(position);
+          player_.PlaybackSession().Position(TimeSpan(std::chrono::microseconds(position)));
+        }
         if (playing_) player_.Play();
       } else if (method == "concatenatingInsertAll" || method == "concatenatingRemoveRange" || method == "concatenatingMove") {
         Mutate(method, *args);
@@ -586,6 +620,17 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     try { duration = TimeSpanToMicroseconds(session.NaturalDuration()); } catch (...) {}
     try { position = TimeSpanToMicroseconds(session.Position()); } catch (...) {}
     try { progress = session.DownloadProgress(); } catch (...) {}
+    if (seek_in_progress_) {
+      // While a seek is landing on the media pipeline, session.Position()
+      // still reports the pre-seek value (or zero on a fresh item), which
+      // confuses Dart-side bookkeeping. Report the requested target instead,
+      // unless the completion event was lost and the safety deadline passed.
+      if (std::chrono::steady_clock::now() >= seek_deadline_) {
+        ClearSeek();
+      } else {
+        position = target_seek_position_;
+      }
+    }
     // CurrentItemIndex is UINT32_MAX or a default 0 before the list settles.
     // Reporting a spurious index there briefly desynchronizes Dart; while the
     // initial load is pending, the requested index is the truthful one.

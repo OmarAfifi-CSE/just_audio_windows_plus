@@ -1,6 +1,6 @@
 name: just_audio_windows_plus
 description: 'Hardened native Windows audio engine for Flutter: files, assets, streams, and playlists over WinRT MediaPlayer with full just_audio compatibility and a C++20 core.'
-version: 0.5.1
+version: 0.5.2
 repository: https://github.com/OmarAfifi-CSE/just_audio_windows_plus
 issue_tracker: https://github.com/OmarAfifi-CSE/just_audio_windows_plus/issues
 

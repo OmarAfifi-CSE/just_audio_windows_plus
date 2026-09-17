@@ -1,3 +1,11 @@
+## 0.5.2
+
+* **Asynchronous Seek Position Integrity**: WinRT applies `PlaybackSession.Position()` asynchronously, so the previously-broadcast position after a seek (or the zero broadcast right after opening a media item with an initial position) reported stale or zero values that corrupted Dart-side verse/repeat bookkeeping. While a seek is landing on the media pipeline, `Broadcast()` now reports the requested target position instead of the stale one, matching ExoPlayer/AVPlayer behavior.
+* **`SeekCompleted` Event Subscription**: Subscribed to the official WinRT `MediaPlaybackSession.SeekCompleted` event; it fires once the seek has officially settled, clears the in-flight flag, and rebroadcasts the truthful position.
+* **Seek Flag Lifecycle Safety**: The in-flight seek flag is reset on every new `load()` and on `MediaFailed`, preventing a lost `SeekCompleted` (interrupted item switch, pipeline abort, disposal) from freezing position broadcasts forever. A 2-second safety deadline also re-enables truthful reporting if the completion event is lost.
+* **Index-Changing Seek Protection**: Seeks that switch playlist items (`seek(index: ...)`) now mark the seek as in flight before `MoveTo()`, closing the window where `CurrentItemChanged` broadcast a zero position for the freshly opened item before the seek landed.
+* **Root-Cause Fix for Repeated-Verse & Off-Target-Seek Bugs**: Together, these fixes eliminate the Windows-only symptoms reported by Quran-style apps (first verse repeating 4x instead of 2x during repeat seeks, and seeking to a verse starting playback from the previous verse), caused by stale position broadcasts racing the asynchronous native seek.
+
 ## 0.5.1
 
 * **Documentation & Presentation**: Refined visual styling, resized showcase screenshot for optimal desktop viewports, and ensured objective, neutral architectural comparison language in `README.md`.

@@ -25,7 +25,7 @@ Pop-Location
 
 ## 2. Real Windows playback regressions
 
-Builds the example with `integration_test/native_audio_test.dart` as its entry point, runs 25 scenarios against the actual compiled plugin on real platform channels, and records machine-readable results.
+Builds the example with `integration_test/native_audio_test.dart` as its entry point, runs 26 scenarios against the actual compiled plugin on real platform channels, and records machine-readable results.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tool/test_windows.ps1 -Mode debug

@@ -7,7 +7,7 @@
 [![pub package](https://img.shields.io/pub/v/just_audio_windows_plus.svg?color=blue&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus)
 [![pub points](https://img.shields.io/pub/points/just_audio_windows_plus?color=2E8B57&label=pub%20points&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus/score)
 [![CI Quality Gate](https://img.shields.io/github/actions/workflow/status/OmarAfifi-CSE/just_audio_windows_plus/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/OmarAfifi-CSE/just_audio_windows_plus/actions/workflows/ci.yml)
-[![Tests: 132 Passing](https://img.shields.io/badge/Tests-132%20Passing-brightgreen?style=flat-square)](test/README.md)
+[![Tests: 133 Passing](https://img.shields.io/badge/Tests-133%20Passing-brightgreen?style=flat-square)](test/README.md)
 [![Standard: C++20](https://img.shields.io/badge/Standard-C%2B%2B20-blueviolet?style=flat-square)](https://en.cppreference.com/w/cpp/20)
 [![Platform: Windows 10 | 11](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D7?style=flat-square)](https://flutter.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
@@ -48,7 +48,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 - 🛡️ **Bulletproof Lifecycle & Disposal**: Native callbacks utilize `std::weak_ptr` with atomic generation tracking. Disposing of a player mid-playback, fast page switching, or triggering hot restart never causes native crashes.
 - 🎯 **Strict `just_audio` Contract Compliance**: `await player.setFilePath(...)` resolves with the exact microsecond duration or throws a catchable `PlayerException` on missing files / 404s (no infinite hangs). `await player.play()` stays active until pause or completion.
 - 🔀 **True Playlist & Shuffle Architecture**: Native recursive source tree supports nested concatenating, looping, and clipping sources with $O(N)$ permutation-safe shuffling and dynamic mutations (even starting from an empty playlist).
-- 🧪 **132 Automated Verification Tests**: Verified by **25 real Windows end-to-end playback integration scenarios** (both Debug and Release), **39 native C++ unit tests**, and **68 Dart contract tests** running in automated CI.
+- 🧪 **133 Automated Verification Tests**: Verified by **26 real Windows end-to-end playback integration scenarios** (both Debug and Release), **39 native C++ unit tests**, and **68 Dart contract tests** running in automated CI.
 
 ---
 
@@ -56,7 +56,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 
 See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 
-| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.2) |
+| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.3) |
 |---|:---:|:---:|
 | **Platform Thread Marshalling** | ❌ Background Threadpool (Engine logs non-platform thread warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`) serialization** |
 | **C++ Toolchain Standard** | ❌ C++17 (Breaks on modern MSVC 14.51 / VS 2026 `STL1011`) | ✅ **Modern C++20 Core (Clean `/W4 /WX` on VS 2026)** |
@@ -71,7 +71,8 @@ See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 | **Native Error Text Integrity** | ❌ Temporary `c_str()` dangling pointer (`FormatException`) | ✅ **Owned `ArgumentError` strings preserve UTF-8 text** |
 | **System Media Transport Controls** | ❌ Automatically hijacks OS lockscreen with blank overlays | ✅ **De-conflicted SMTC (Integrate cleanly with `audio_service`)** |
 | **Multi-Engine Isolation** | ❌ Namespace globals share state across Flutter engines | ✅ **Instance-scoped players and dispatchers** |
-| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **25 Real Playback Scenarios + 39 C++ Tests + 68 Dart Tests** |
+| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **26 Real Playback Scenarios + 39 C++ Tests + 68 Dart Tests** |
+| **Restart from Completed State** | ❌ Engine parks in `completed` after EOF; replaying the same source stays silent until a fresh source load | ✅ **`completed → ready` re-arm + one-shot event retry + self-healing full-state re-broadcast (converging delivery)** |
 
 ---
 
@@ -86,7 +87,7 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.10.6
-  just_audio_windows_plus: ^0.5.2
+  just_audio_windows_plus: ^0.5.3
 ```
 
 > [!TIP]
@@ -337,7 +338,7 @@ flutter test
 # 2. Run native C++ source tree and dispatcher unit tests (39 tests)
 powershell -ExecutionPolicy Bypass tool/test_native.ps1
 
-# 3. Run real Windows playback regression suite against the compiled plugin (25 scenarios)
+# 3. Run real Windows playback regression suite against the compiled plugin (26 scenarios)
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode debug
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode release
 ```

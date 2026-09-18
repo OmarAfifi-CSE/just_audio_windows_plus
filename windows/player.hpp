@@ -1,9 +1,10 @@
 #pragma comment(lib, "windowsapp")
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include "source_model.hpp"
-#include <chrono>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -144,21 +145,52 @@ public:
   }
 
   void Success(const EncodableValue& event) {
-    std::lock_guard<std::mutex> lock(sink_mutex_);
-    if (sink) {
-      try {
-        sink->Success(event);
-      } catch (...) {}
+    bool schedule_recovery = false;
+    {
+      std::lock_guard<std::mutex> lock(sink_mutex_);
+      if (sink) {
+        try {
+          sink->Success(event);
+        } catch (...) {
+          try {
+            sink->Success(event);
+          } catch (...) {
+            schedule_recovery = true;
+          }
+        }
+      }
     }
+    // Invoked after releasing sink_mutex_: the recovery hook re-enters the
+    // sink through a full-state Broadcast(), and calling it under the lock
+    // would deadlock.
+    if (schedule_recovery && deferred_recovery_) deferred_recovery_();
   }
 
   void Error(const std::string& error_code, const std::string& error_message) {
-    std::lock_guard<std::mutex> lock(sink_mutex_);
-    if (sink) {
-      try {
-        sink->Error(error_code, error_message);
-      } catch (...) {}
+    bool schedule_recovery = false;
+    {
+      std::lock_guard<std::mutex> lock(sink_mutex_);
+      if (sink) {
+        try {
+          sink->Error(error_code, error_message);
+        } catch (...) {
+          try {
+            sink->Error(error_code, error_message);
+          } catch (...) {
+            schedule_recovery = true;
+          }
+        }
+      }
     }
+    if (schedule_recovery && deferred_recovery_) deferred_recovery_();
+  }
+
+  // Installed by the owning AudioPlayer once shared ownership exists. When a
+  // state event fails to deliver after the immediate retry, this hook
+  // schedules a full-state Broadcast() on the player's dispatcher so any
+  // lost event is re-delivered and Dart's belief converges with the engine.
+  void SetDeferredRecovery(std::function<void()> hook) {
+    deferred_recovery_ = std::move(hook);
   }
 
 private:
@@ -166,6 +198,7 @@ private:
   std::string id_;
   std::mutex sink_mutex_;
   std::unique_ptr<flutter::EventSink<>> sink = nullptr;
+  std::function<void()> deferred_recovery_;
 };
 
 class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
@@ -191,6 +224,15 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       if (auto player = weak.lock()) player->HandleMethodCall(call, std::move(result));
       else result->Error("disposed", "Player has been disposed");
     });
+    // Self-healing event delivery: when a state event fails to deliver even
+    // after the sink's immediate retry, one deduplicated full-state
+    // Broadcast() is scheduled on this player's dispatcher, re-delivering
+    // every field so Dart's belief converges with the engine.
+    auto recovery = [weak] {
+      if (auto owner = weak.lock()) owner->PostRecoveryBroadcast();
+    };
+    event_sink_->SetDeferredRecovery(recovery);
+    data_sink_->SetDeferredRecovery(recovery);
     ResetNative();
   }
 
@@ -215,6 +257,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   std::unique_ptr<flutter::MethodChannel<EncodableValue>> player_channel_;
   std::unique_ptr<JustAudioEventSink> event_sink_;
   std::unique_ptr<JustAudioEventSink> data_sink_;
+  std::atomic<bool> recovery_broadcast_pending_{false};
   Playback::MediaPlayer player_{nullptr};
   Playback::MediaPlaybackList list_{nullptr};
   std::vector<std::function<void()>> revoke_;
@@ -338,6 +381,32 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       });
     });
     revoke_.push_back([list, itemFailed] { list.ItemFailed(itemFailed); });
+  }
+
+  // Thread-safe self-healing entry point: callable from any thread (native
+  // WinRT callbacks included). Reads only the construction-time dispatcher
+  // and the weak self handle here; generation_ and player state are touched
+  // exclusively inside the posted action, on the dispatcher thread, keeping
+  // the exact threading discipline of every other native path.
+  void PostRecoveryBroadcast() {
+    if (recovery_broadcast_pending_.exchange(true)) return;
+    std::weak_ptr<AudioPlayer> weak = weak_from_this();
+    std::weak_ptr<PlatformThreadDispatcher> dispatcher = dispatcher_;
+    if (auto queue = dispatcher.lock()) {
+      queue->Post([weak] {
+        if (auto owner = weak.lock()) {
+          // Keep the dedupe flag active while Broadcast() runs so that any
+          // send failure during recovery cannot trigger recursive re-entry.
+          struct PendingGuard {
+            std::atomic<bool>& flag;
+            ~PendingGuard() { flag.store(false); }
+          } guard{owner->recovery_broadcast_pending_};
+          owner->Broadcast();
+        }
+      });
+    } else {
+      recovery_broadcast_pending_.store(false);
+    }
   }
 
   void CancelLoad(const std::string& message) {
@@ -523,6 +592,11 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
         playing_ = true;
         pending_play_.push_back(std::move(result));
         if (completed_ || failed_) CompletePlay();
+        // Restarting after a natural end must re-arm the completion lifecycle:
+        // without clearing the flag the plugin keeps reporting
+        // ProcessingState.completed forever, so just_audio never sees `ready`
+        // again and completion/repeat listeners stall on the second pass.
+        completed_ = false;
         Broadcast();
         return;
       } else if (method == "pause" || method == "stop") {

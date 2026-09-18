@@ -211,6 +211,54 @@ Future<void> main() async {
     await eventually(() => p.position > const Duration(milliseconds: 30),
         'seek after EOF did not resume');
   });
+  await scenario('app-style restart from completed survives repeated passes',
+      () async {
+    // Replicates the Quran-video-studio recovery sequence exactly: a natural
+    // end of track, pause() (the app's merged reset), seek(0), play() again -
+    // repeated back-to-back so any intermittent wedge shows up. Also proves
+    // the completed -> ready transition re-arms completion listeners.
+    final p = await newPlayer();
+    final completions = <int>[];
+    final sub = p.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.completed) {
+        completions.add(completions.length);
+      }
+    });
+    await p.setFilePath(_shortWav.path);
+    for (var pass = 0; pass < 5; pass++) {
+      await p.play().timeout(const Duration(seconds: 6));
+      require(p.processingState == ProcessingState.completed,
+          'pass $pass: play returned before EOF');
+      // The app's merged-mode reset: pause first, then seek back to zero.
+      await p.pause();
+      require(!p.playing, 'pass $pass: pause intent');
+      await p.seek(Duration.zero);
+      require(p.processingState != ProcessingState.completed,
+          'pass $pass: seek kept the completed state');
+    }
+    // Bare play() straight from the completed engine (no seek first): the
+    // contract path that used to wedge. pause() first so the Dart play intent
+    // is cleared and the call actually reaches the platform, then play
+    // WITHOUT any seek — exactly the app's toggle-from-completed path. Must
+    // transition completed -> ready, restart audio, and re-arm completion.
+    await p.play().timeout(const Duration(seconds: 6));
+    require(p.processingState == ProcessingState.completed,
+        'warm-up play did not reach EOF');
+    await p.pause();
+    require(!p.playing, 'pause did not clear playing intent');
+    require(p.processingState == ProcessingState.completed,
+        'pause should not erase the completed state');
+    await p.play().timeout(const Duration(seconds: 6));
+    await eventually(
+        () => p.processingState == ProcessingState.ready,
+        'bare play after EOF never left the completed state');
+    await eventually(
+        () => p.processingState == ProcessingState.completed,
+        're-armed completion did not fire at the next EOF');
+    require(completions.length >= 7,
+        'each restart pass must deliver a fresh completed event, got ${completions.length}');
+    await sub.cancel();
+  });
   await scenario('missing file fails load and reports error', () async {
     final p = await newPlayer();
     final errors = <PlayerException>[];

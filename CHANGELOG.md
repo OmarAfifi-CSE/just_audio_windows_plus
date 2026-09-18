@@ -1,3 +1,8 @@
+## 0.5.3
+
+* **Completion Lifecycle Re-arm on Restart**: Calling play() after a natural end now clears the native completed_ flag, so the plugin reports completed -> ready transitions instead of staying parked in completed forever. This lets just_audio re-arm completion listeners (fixing second-pass completion/repeat counting stalls in apps that restart from the completed state).
+* **Event Sink Delivery Retry**: A transient exception while pushing a state/data event to Dart no longer silently drops that event - the send is retried once, and if the retry is also lost, a deduplicated full-state Broadcast() is scheduled on the player's dispatcher, re-delivering every field so Dart's belief always converges with the engine.
+
 ## 0.5.2
 
 * **Asynchronous Seek Position Integrity**: WinRT applies `PlaybackSession.Position()` asynchronously, so the previously-broadcast position after a seek (or the zero broadcast right after opening a media item with an initial position) reported stale or zero values that corrupted Dart-side verse/repeat bookkeeping. While a seek is landing on the media pipeline, `Broadcast()` now reports the requested target position instead of the stale one, matching ExoPlayer/AVPlayer behavior.

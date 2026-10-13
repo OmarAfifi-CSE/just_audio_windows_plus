@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 #include <memory>
+#include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace {
 // Exercise the real HWND and WndProc without a Flutter engine or timed sleeps.
@@ -96,6 +98,21 @@ TEST(PlatformThreadDispatcher, ShutdownDropsPendingWorkAndRejectsWorkerPosts) {
   dispatcher.Shutdown();
   PumpMessages();
   EXPECT_EQ(calls, 0);
+}
+
+// Drain() runs inside a WndProc, so a throwing task must not reach the OS
+// message loop. This would call std::terminate without the guard.
+TEST(PlatformThreadDispatcher, AThrowingTaskIsContainedAndTheBatchContinues) {
+  PlatformThreadDispatcher dispatcher;
+  ASSERT_TRUE(dispatcher.available());
+  std::vector<int> calls;
+  ASSERT_TRUE(dispatcher.Post([&] {
+    calls.push_back(1);
+    throw std::runtime_error("task failure");
+  }));
+  ASSERT_TRUE(dispatcher.Post([&] { calls.push_back(2); }));
+  PumpMessages();
+  EXPECT_EQ(calls, (std::vector<int>{1, 2}));
 }
 
 TEST(PlatformThreadDispatcher, ShutdownInsideCallbackDropsRestOfDrainedBatch) {

@@ -376,6 +376,110 @@ Future<void> main() async {
       await p.dispose();
     }
   });
+  await scenario('an invalid load is rejected without disturbing playback',
+      () async {
+    // An out-of-range initialIndex must be reported as an argument error and
+    // must leave the currently playing source alone, rather than tearing the
+    // engine down through the failure path.
+    final p = await newPlayer();
+    await p.setFilePath(_longWav.path);
+    unawaited(p.play());
+    await eventually(() => p.position > const Duration(milliseconds: 100),
+        'playback never started');
+
+    final raw = RawPlayer('load-validation');
+    await raw.init();
+    try {
+      for (final request in <(String, Map<String, Object?>)>[
+        (
+          'load',
+          {
+            'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
+            'initialIndex': 5,
+          }
+        ),
+        (
+          'load',
+          {
+            'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
+            'initialPosition': -1,
+          }
+        ),
+        ('load', <String, Object?>{'audioSource': 42}),
+      ]) {
+        final failure = await caught(raw.call(request.$1, request.$2));
+        require(failure is PlatformException,
+            '${request.$1} accepted invalid input: $failure');
+        require((failure as PlatformException).code == 'argument_error',
+            '${request.$1} reported ${failure.code}, not argument_error');
+      }
+    } finally {
+      await raw.dispose();
+    }
+
+    // The first player is untouched by another player's rejected load.
+    final before = p.position;
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    require(p.position > before,
+        'a rejected load on another player stopped this one at $before');
+    await p.pause();
+  });
+  await scenario('buffered position stays within the duration', () async {
+    // Invariant guard. An app draws its buffer bar from bufferedPosition, so a
+    // value above the duration would overshoot the track end. Read from the raw
+    // channel so the unconverted microsecond fields are asserted directly.
+    final p = RawPlayer('buffered');
+    await p.init();
+    try {
+      await p.call('load', {
+        'audioSource': leaf('a', _longWav.uri),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      await p.call('seek', {'index': 0, 'position': 1500000});
+      unawaited(p.call('play'));
+      final watch = Stopwatch()..start();
+      while (watch.elapsed < const Duration(seconds: 2)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      final withDuration = p.events
+          .where((e) => e['duration'] is int && (e['duration'] as int) > 0)
+          .toList();
+      require(withDuration.isNotEmpty, 'no event carried a duration');
+      for (final event in withDuration) {
+        final buffered = event['bufferedPosition'] as int;
+        final duration = event['duration'] as int;
+        require(buffered <= duration,
+            'bufferedPosition $buffered exceeds duration $duration');
+        require(buffered >= 0, 'bufferedPosition $buffered is negative');
+      }
+    } finally {
+      await p.dispose();
+    }
+  });
+  await scenario('a play with no source stays pending, as just_audio expects',
+      () async {
+    // just_audio's platform activation sends `play` before `load`, so a play
+    // that arrives with nothing attached must NOT be settled: resolving it
+    // would return from `await player.play()` before the track even starts.
+    // It settles when the load that follows completes the media, or on pause.
+    final p = RawPlayer('play-empty');
+    await p.init();
+    try {
+      var completed = false;
+      final play = p.call('play').then((_) => completed = true);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      require(!completed,
+          'a source-less play must stay pending, got $completed');
+      // A load still cannot rescue a source-less play on its own: the play was
+      // issued before any source existed, so only an explicit pause settles it.
+      await p.call('pause').timeout(const Duration(seconds: 3));
+      await play.timeout(const Duration(seconds: 3));
+      require(completed, 'pause did not settle the pending play');
+    } finally {
+      await p.dispose();
+    }
+  });
   await scenario('initial load reports no spurious index 0', () async {
     final p = RawPlayer('index-settle');
     await p.init();
@@ -463,6 +567,130 @@ Future<void> main() async {
           'shuffle did not finish');
       require(
           indices.join(',') == '0,2,1', 'Expected 0,2,1, observed $indices');
+    } finally {
+      await sub.cancel();
+    }
+  });
+  await scenario('shuffle mode off plays the natural order', () async {
+    // just_audio shuffles the source order at load time regardless of the
+    // shuffle mode, so the native engine receives a permuted `shuffleOrder`
+    // even when shuffling is off. That permutation must only be applied to the
+    // playback list while shuffle mode is enabled; otherwise a 3+ item
+    // playlist plays in the wrong order.
+    final p = await newPlayer();
+    await p.setAudioSources(
+        List.generate(3, (_) => AudioSource.uri(_shortWav.uri)),
+        shuffleOrder: ReverseShuffle());
+    require(!p.shuffleModeEnabled, 'shuffle must be off for this scenario');
+    final indices = <int?>[];
+    final sub = p.currentIndexStream.distinct().listen(indices.add);
+    try {
+      unawaited(p.play());
+      await eventually(() => p.processingState == ProcessingState.completed,
+          'playback did not finish');
+      require(indices.join(',') == '0,1,2',
+          'Expected natural order 0,1,2 with shuffle off, observed $indices');
+    } finally {
+      await sub.cancel();
+    }
+  });
+  await scenario('play before load waits for the end of media', () async {
+    // just_audio sends `play` before `load` when the platform is not active
+    // yet, so a play that arrives with no source attached must stay pending:
+    // resolving it immediately would break `await player.play()`.
+    final p = await newPlayer();
+    await p.setAudioSources([AudioSource.uri(_longWav.uri)], preload: false);
+    var completed = false;
+    final play = p.play().then((_) => completed = true);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    require(!completed,
+        'play() resolved before the track ended: $completed');
+    await play.timeout(const Duration(seconds: 8));
+    require(completed, 'the play future never completed');
+  });
+  await scenario('changing modes mid-playback keeps the current track', () async {
+    // Applying the shuffle order hands WinRT a fresh progression order for the
+    // whole playback list. If that reset the current item, toggling shuffle or
+    // loop mode while a track is playing would jump back to the first item.
+    for (final shuffle in [false, true]) {
+      final p = await newPlayer();
+      await p.setAudioSources([
+        AudioSource.uri(_longWav.uri),
+        AudioSource.uri(_longWav.uri),
+      ]);
+      if (shuffle) await p.setShuffleModeEnabled(true);
+      unawaited(p.play());
+      await eventually(() => p.position > const Duration(milliseconds: 100),
+          'playback never started (shuffle=$shuffle)');
+      if (shuffle) {
+        await p.setLoopMode(LoopMode.all);
+      } else {
+        await p.setShuffleModeEnabled(true);
+        await p.setShuffleModeEnabled(false);
+      }
+      require(p.currentIndex == 0,
+          'mode change jumped to index ${p.currentIndex} (shuffle=$shuffle)');
+      require(p.position > Duration.zero,
+          'mode change rewound the position to ${p.position} '
+          '(shuffle=$shuffle)');
+      await p.pause();
+    }
+  });
+  await scenario('the data channel reaches a subscriber that attaches late', () async {
+    // The data map is deduped, so a value published while nobody was listening
+    // is not replayed. Verify a subscriber that attaches after those publishes
+    // still learns the state, which is what just_audio relies on when it reads
+    // `playing` to decide whether a play request is needed.
+    final p = RawPlayer('late-data');
+    await p.init();
+    try {
+      await p.call('setVolume', {'volume': 0.25});
+      await p.call('load', {
+        'audioSource': leaf('a', _longWav.uri),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      final seen = <Map<dynamic, dynamic>>[];
+      final sub = EventChannel('com.ryanheise.just_audio.data.late-data')
+          .receiveBroadcastStream()
+          .listen((dynamic e) => seen.add(e as Map<dynamic, dynamic>));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      // Any further method call republishes the current intent.
+      await p.call('setSpeed', {'speed': 1.25});
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await sub.cancel();
+      require(seen.isNotEmpty,
+          'a late subscriber received nothing; volume would look unchanged');
+      require(seen.last['volume'] == 0.25,
+          'late subscriber got volume ${seen.last['volume']}');
+      require(seen.last['speed'] == 1.25,
+          'late subscriber got speed ${seen.last['speed']}');
+      require(seen.last['playing'] == false,
+          'late subscriber got playing ${seen.last['playing']}');
+    } finally {
+      await p.dispose();
+    }
+  });
+  await scenario('a shuffle order set while off applies once shuffle is enabled',
+      () async {
+    // `player.shuffle()` sends setShuffleOrder regardless of the mode. With
+    // shuffle off that order must be remembered and applied when shuffling is
+    // turned on, not silently dropped.
+    final p = await newPlayer();
+    await p.setAudioSources(
+        List.generate(3, (_) => AudioSource.uri(_shortWav.uri)),
+        shuffleOrder: ReverseShuffle());
+    require(!p.shuffleModeEnabled, 'shuffle must start off');
+
+    await p.setShuffleModeEnabled(true);
+    final indices = <int?>[];
+    final sub = p.currentIndexStream.distinct().listen(indices.add);
+    try {
+      unawaited(p.play());
+      await eventually(() => p.processingState == ProcessingState.completed,
+          'playback did not finish');
+      require(indices.join(',') == '0,2,1',
+          'the declared shuffle order was not applied once enabled: $indices');
     } finally {
       await sub.cancel();
     }

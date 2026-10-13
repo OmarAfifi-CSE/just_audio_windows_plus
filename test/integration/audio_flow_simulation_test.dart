@@ -1,195 +1,251 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
 import '../helpers/mock_audio_engine.dart';
 
+/// End-to-end flows through the channel contract: the sequences an application
+/// actually performs, asserted against the same rules the native engine
+/// enforces. The equivalent flows against the real compiled plugin live in
+/// `example/integration_test/native_audio_test.dart`.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('End-to-End Audio Flow Simulation Tests', () {
-    setUp(() {
-      MockAudioEngine.install();
+  setUp(MockAudioEngine.install);
+  tearDown(MockAudioEngine.uninstall);
+
+  Future<MockPlayerInstance> init(String id) async {
+    await MockAudioEngine.rootChannel
+        .invokeMethod<void>('init', <String, dynamic>{'id': id});
+    return MockAudioEngine.getPlayer(id)!;
+  }
+
+  test('a full load, play, seek, pause and resume cycle', () async {
+    final player = await init('flow_player');
+    final channel = player.methodChannel;
+
+    final states = <int>[];
+    final subscription = player.eventChannel
+        .receiveBroadcastStream()
+        .listen((dynamic event) {
+      states.add((event as Map<dynamic, dynamic>)['processingState'] as int);
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final load =
+        await channel.invokeMapMethod<String, dynamic>('load', <String, dynamic>{
+      'audioSource': threeTrackPlaylist('flow'),
+    });
+    expect(load!['duration'], 180000000);
+    expect(player.sourceSet, isTrue);
+
+    var playCompleted = false;
+    final play = channel
+        .invokeMethod<void>('play', <String, dynamic>{})
+        .then((_) => playCompleted = true);
+    expect(player.playing, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(playCompleted, isFalse);
+
+    await channel.invokeMethod<void>('seek', <String, dynamic>{
+      'index': 2,
+      'position': 90000000,
+    });
+    expect(player.currentIndex, 2);
+    expect(player.positionUs, 90000000);
+
+    await channel.invokeMethod<void>('pause', <String, dynamic>{});
+    await play.timeout(const Duration(seconds: 1));
+    expect(playCompleted, isTrue);
+    expect(player.playing, isFalse);
+
+    await subscription.cancel();
+    expect(states, isNotEmpty);
+  });
+
+  test('playback completes at the end of media and stays replayable', () async {
+    final player = await init('completion_player');
+    final channel = player.methodChannel;
+
+    await channel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': progressiveSource('a', 'file:///audio/0.mp3'),
     });
 
-    tearDown(() {
-      MockAudioEngine.uninstall();
+    var playCompleted = false;
+    final play = channel
+        .invokeMethod<void>('play', <String, dynamic>{})
+        .then((_) => playCompleted = true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(playCompleted, isFalse,
+        reason: 'play must not resolve before the end of media');
+
+    // The native engine settles the play from MediaEnded.
+    player.completed = true;
+    player.broadcastState();
+    player.completePlay();
+    await play.timeout(const Duration(seconds: 1));
+
+    expect(playCompleted, isTrue);
+    expect(player.processingState, 4);
+    expect(player.playing, isTrue,
+        reason: 'the playing intent survives completion, as just_audio expects');
+
+    // Replaying from completed re-arms the lifecycle.
+    await channel.invokeMethod<void>('play', <String, dynamic>{});
+    expect(player.completed, isFalse);
+    expect(player.processingState, 3);
+  });
+
+  test('a load failure rolls the source back and reports the message',
+      () async {
+    final player = await init('failure_player');
+    final channel = player.methodChannel;
+
+    await channel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': progressiveSource('a', 'file:///audio/0.mp3'),
+    });
+    expect(player.sourceSet, isTrue);
+
+    player.fail('WinRT: 0x80070005 access denied');
+    expect(player.sourceSet, isFalse);
+    expect(player.failed, isTrue);
+    expect(player.processingState, 0);
+
+    // A fresh load recovers the player.
+    await channel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': progressiveSource('a', 'file:///audio/0.mp3'),
+    });
+    expect(player.sourceSet, isTrue);
+    expect(player.failed, isFalse);
+  });
+
+  test('an invalid mutation leaves the loaded source usable', () async {
+    final player = await init('resilience_player');
+    final channel = player.methodChannel;
+
+    await channel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': threeTrackPlaylist('resilience'),
     });
 
-    test('Complete Surah Recitation Lifecycle Flow', () async {
-      const playerId = 'surah_player';
-      const eventChannelName = 'com.ryanheise.just_audio.events.$playerId';
-
-      // 1. Initialize Player
-      await MockAudioEngine.rootChannel.invokeMethod('init', <String, dynamic>{'id': playerId});
-      final playerChannel = MethodChannel('com.ryanheise.just_audio.methods.$playerId');
-      final player = MockAudioEngine.getPlayer(playerId)!;
-
-      // 2. Connect to EventChannel
-      const eventChannel = EventChannel(eventChannelName);
-      final receivedStates = <int>[];
-      final sub = eventChannel.receiveBroadcastStream().listen((dynamic event) {
-        final map = event as Map<dynamic, dynamic>;
-        receivedStates.add(map['processingState'] as int);
-      });
-
-      // 3. Load Holy Quran Surah Al-Fatihah
-      final loadRes = await playerChannel.invokeMapMethod<String, dynamic>('load', <String, dynamic>{
-        'audioSource': <String, dynamic>{
-          'type': 'progressive',
-          'uri': 'https://server10.mp3quran.net/minsh/001.mp3',
+    for (final (String name, Map<String, dynamic> args) request
+        in <(String, Map<String, dynamic>)>[
+      ('setVolume', <String, dynamic>{'volume': 'loud'}),
+      ('setVolume', <String, dynamic>{'volume': double.nan}),
+      ('setSpeed', <String, dynamic>{'speed': -1.0}),
+      ('setLoopMode', <String, dynamic>{'loopMode': 7}),
+      ('seek', <String, dynamic>{'index': 1 << 40}),
+      (
+        'concatenatingInsertAll',
+        <String, dynamic>{
+          'id': 'root',
+          'index': 1,
+          'children': <Map<String, dynamic>>[
+            progressiveSource('x', 'file:///audio/x.mp3'),
+          ],
+          'shuffleOrder': <int>[0, 0],
         },
-      });
-      expect(loadRes!['duration'], 180000000);
+      ),
+      (
+        'setShuffleOrder',
+        <String, dynamic>{'audioSource': threeTrackPlaylist('mismatch')},
+      ),
+    ]) {
+      await expectLater(
+        channel.invokeMethod<void>(request.$1, request.$2),
+        throwsA(isA<PlatformException>()
+            .having((e) => e.code, 'code', 'argument_error')),
+        reason: '${request.$1} should have been rejected',
+      );
+    }
 
-      // 4. Emit Loading & Buffering events
-      player.eventController.add(<String, dynamic>{
-        'processingState': 1, // loading
-        'updatePosition': 0,
-        'updateTime': 100,
-        'bufferedPosition': 0,
-        'duration': 180000000,
-        'currentIndex': 0,
-      });
+    // The original source is untouched and still plays. `play` is deliberately
+    // not awaited: the engine holds it open until pause or end of media.
+    expect(player.leaves, hasLength(3));
+    unawaited(channel.invokeMethod<void>('play', <String, dynamic>{}));
+    expect(player.playing, isTrue);
+  });
 
-      player.eventController.add(<String, dynamic>{
-        'processingState': 2, // buffering
-        'updatePosition': 0,
-        'updateTime': 200,
-        'bufferedPosition': 50000000,
-        'duration': 180000000,
-        'currentIndex': 0,
-      });
+  test('two players stay isolated', () async {
+    final a = await init('player_a');
+    final b = await init('player_b');
 
-      // 5. Start Playback
-      await playerChannel.invokeMethod('play', <String, dynamic>{});
-      expect(player.isPlaying, isTrue);
-
-      player.eventController.add(<String, dynamic>{
-        'processingState': 3, // ready
-        'updatePosition': 1000000,
-        'updateTime': 300,
-        'bufferedPosition': 180000000,
-        'duration': 180000000,
-        'currentIndex': 0,
-      });
-
-      // 6. Mid-stream Seek
-      await playerChannel.invokeMethod('seek', <String, dynamic>{
-        'position': 90000000, // 90s halfway
-        'index': 0,
-      });
-      expect(player.positionUs, 90000000);
-
-      // 7. Pause & Resume
-      await playerChannel.invokeMethod('pause', <String, dynamic>{});
-      expect(player.isPlaying, isFalse);
-
-      await playerChannel.invokeMethod('play', <String, dynamic>{});
-      expect(player.isPlaying, isTrue);
-
-      // 8. Track Completion
-      player.eventController.add(<String, dynamic>{
-        'processingState': 4, // completed
-        'updatePosition': 180000000,
-        'updateTime': 1000,
-        'bufferedPosition': 180000000,
-        'duration': 180000000,
-        'currentIndex': 0,
-      });
-
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      expect(receivedStates, containsAllInOrder([1, 2, 3, 4]));
-
-      // 9. Teardown
-      await sub.cancel();
-      await MockAudioEngine.rootChannel.invokeMethod('disposePlayer', <String, dynamic>{'id': playerId});
-      expect(MockAudioEngine.activePlayers.isEmpty, isTrue);
+    await a.methodChannel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': threeTrackPlaylist('a'),
+    });
+    await b.methodChannel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': progressiveSource('b', 'file:///audio/b.mp3'),
     });
 
-    test('Two-Player Cross-Fade Audio Flow Simulation', () async {
-      const playerAId = 'crossfade_a';
-      const playerBId = 'crossfade_b';
+    await a.methodChannel
+        .invokeMethod<void>('setVolume', <String, dynamic>{'volume': 0.25});
+    await a.methodChannel
+        .invokeMethod<void>('setSpeed', <String, dynamic>{'speed': 1.5});
+    await a.methodChannel
+        .invokeMethod<void>('setLoopMode', <String, dynamic>{'loopMode': 2});
+    unawaited(
+      a.methodChannel.invokeMethod<void>('play', <String, dynamic>{}),
+    );
 
-      await MockAudioEngine.rootChannel.invokeMethod('init', <String, dynamic>{'id': playerAId});
-      await MockAudioEngine.rootChannel.invokeMethod('init', <String, dynamic>{'id': playerBId});
+    expect(a.volume, 0.25);
+    expect(a.speed, 1.5);
+    expect(a.loopMode, 2);
+    expect(a.playing, isTrue);
 
-      final channelA = MethodChannel('com.ryanheise.just_audio.methods.$playerAId');
-      final channelB = MethodChannel('com.ryanheise.just_audio.methods.$playerBId');
+    expect(b.volume, 1.0);
+    expect(b.speed, 1.0);
+    expect(b.loopMode, 0);
+    expect(b.playing, isFalse);
+    expect(b.leaves, hasLength(1));
+  });
 
-      final playerA = MockAudioEngine.getPlayer(playerAId)!;
-      final playerB = MockAudioEngine.getPlayer(playerBId)!;
-
-      // Load both
-      await channelA.invokeMethod('load', <String, dynamic>{
-        'audioSource': <String, dynamic>{
-          'type': 'progressive',
-          'uri': 'https://server10.mp3quran.net/minsh/001.mp3',
-        },
-      });
-
-      await channelB.invokeMethod('load', <String, dynamic>{
-        'audioSource': <String, dynamic>{
-          'type': 'progressive',
-          'uri': 'https://server10.mp3quran.net/minsh/002.mp3',
-        },
-      });
-
-      // Player A playing at volume 1.0, Player B ready at volume 0.0
-      await channelA.invokeMethod('play', <String, dynamic>{});
-      await channelA.invokeMethod('setVolume', <String, dynamic>{'volume': 1.0});
-
-      await channelB.invokeMethod('play', <String, dynamic>{});
-      await channelB.invokeMethod('setVolume', <String, dynamic>{'volume': 0.0});
-
-      // Crossfade simulation over 5 steps
-      for (var step = 1; step <= 5; step++) {
-        final volA = (5 - step) / 5.0;
-        final volB = step / 5.0;
-        await channelA.invokeMethod('setVolume', <String, dynamic>{'volume': volA});
-        await channelB.invokeMethod('setVolume', <String, dynamic>{'volume': volB});
-      }
-
-      expect(playerA.volume, 0.0);
-      expect(playerB.volume, 1.0);
-
-      // Stop Player A
-      await channelA.invokeMethod('stop', <String, dynamic>{});
-      expect(playerA.isPlaying, isFalse);
-      expect(playerB.isPlaying, isTrue);
+  test('disposing one player leaves the other intact', () async {
+    final a = await init('dispose_a');
+    final b = await init('dispose_b');
+    await a.methodChannel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': progressiveSource('a', 'file:///audio/a.mp3'),
+    });
+    await b.methodChannel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': progressiveSource('b', 'file:///audio/b.mp3'),
     });
 
-    test('Network Drop and Auto-Recovery Flow Simulation', () async {
-      const playerId = 'network_recovery_player';
-      await MockAudioEngine.rootChannel.invokeMethod('init', <String, dynamic>{'id': playerId});
-      final channel = MethodChannel('com.ryanheise.just_audio.methods.$playerId');
-      final player = MockAudioEngine.getPlayer(playerId)!;
+    await MockAudioEngine.rootChannel
+        .invokeMethod<void>('disposePlayer', <String, dynamic>{'id': 'dispose_a'});
+    expect(a.isDisposed, isTrue);
+    expect(b.isDisposed, isFalse);
 
-      // 1. Initial Load & Play
-      await channel.invokeMethod('load', <String, dynamic>{
-        'audioSource': <String, dynamic>{
-          'type': 'progressive',
-          'uri': 'https://server10.mp3quran.net/minsh/001.mp3',
-        },
-      });
-      await channel.invokeMethod('play', <String, dynamic>{});
+    unawaited(b.methodChannel.invokeMethod<void>('play', <String, dynamic>{}));
+    expect(b.playing, isTrue);
+  });
 
-      // 2. Network drop simulation
-      player.eventController.addError(PlatformException(
-        code: 'networkError',
-        message: 'Network connection dropped unexpectedly',
-      ));
+  test('replacing a playlist applies the new shuffle order', () async {
+    final player = await init('shuffle_player');
+    final channel = player.methodChannel;
 
-      // 3. Client handles error and reloads
-      await channel.invokeMethod('load', <String, dynamic>{
-        'audioSource': <String, dynamic>{
-          'type': 'progressive',
-          'uri': 'https://server10.mp3quran.net/minsh/001.mp3',
-        },
-        'initialPosition': 45000000, // Resume from 45s
-      });
-      await channel.invokeMethod('play', <String, dynamic>{});
-
-      expect(player.isPlaying, isTrue);
-      expect(player.sourceSet, isTrue);
+    await channel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': concatenatingSource(
+        'root',
+        <Map<String, dynamic>>[
+          progressiveSource('a', 'file:///audio/0.mp3'),
+          progressiveSource('b', 'file:///audio/1.mp3'),
+          progressiveSource('c', 'file:///audio/2.mp3'),
+        ],
+        <int>[0, 1, 2],
+      ),
     });
+    expect(player.progressionOrder, <int>[0, 1, 2]);
+
+    await channel.invokeMethod<void>('setShuffleOrder', <String, dynamic>{
+      'audioSource': concatenatingSource(
+        'root',
+        <Map<String, dynamic>>[
+          progressiveSource('a', 'file:///audio/0.mp3'),
+          progressiveSource('b', 'file:///audio/1.mp3'),
+          progressiveSource('c', 'file:///audio/2.mp3'),
+        ],
+        <int>[0, 2, 1],
+      ),
+    });
+    expect(player.progressionOrder, <int>[0, 2, 1]);
   });
 }

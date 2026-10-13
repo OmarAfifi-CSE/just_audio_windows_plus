@@ -1,183 +1,231 @@
 import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
 import '../helpers/mock_audio_engine.dart';
 
+/// Concurrency and lifecycle stress against the channel contract. These
+/// assert that the engine's invariants hold under interleaved traffic, not
+/// that a Dart stub is fast.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('Adversarial Stress & Extreme Race Condition Tests', () {
-    const playerId = 'stress_player';
-    const channelName = 'com.ryanheise.just_audio.methods.$playerId';
-    late MethodChannel channel;
+  const playerId = 'stress_player';
 
-    setUp(() async {
-      MockAudioEngine.install();
-      await MockAudioEngine.rootChannel.invokeMethod('init', <String, dynamic>{
-        'id': playerId,
-      });
-      channel = const MethodChannel(channelName);
+  late MethodChannel channel;
+  late MockPlayerInstance player;
+
+  setUp(() async {
+    MockAudioEngine.install();
+    await MockAudioEngine.rootChannel
+        .invokeMethod<void>('init', <String, dynamic>{'id': playerId});
+    channel = const MethodChannel('com.ryanheise.just_audio.methods.$playerId');
+    player = MockAudioEngine.getPlayer(playerId)!;
+    await channel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': threeTrackPlaylist('stress'),
     });
+  });
 
-    tearDown(() {
-      MockAudioEngine.uninstall();
-    });
+  tearDown(MockAudioEngine.uninstall);
 
-    test('500 rapid burst seeks complete without dropping messages or deadlocking', () async {
-      const iterations = 500;
-      final futures = <Future<void>>[];
-
-      for (var i = 0; i < iterations; i++) {
-        futures.add(channel.invokeMethod('seek', <String, dynamic>{
-          'position': (i % 2 == 0) ? (i * 1000000) : -(i * 500000),
-          'index': i % 10,
-        }));
+  test('500 interleaved transport calls all reach the engine', () async {
+    const iterations = 500;
+    // `play` is deliberately not awaited: the native engine holds the future
+    // open until pause or end of media.
+    final awaitable = <Future<void>>[];
+    for (var i = 0; i < iterations; i++) {
+      switch (i % 3) {
+        case 0:
+          unawaited(
+            channel.invokeMethod<void>('play', <String, dynamic>{}),
+          );
+        case 1:
+          awaitable
+              .add(channel.invokeMethod<void>('pause', <String, dynamic>{}));
+        default:
+          awaitable
+              .add(channel.invokeMethod<void>('stop', <String, dynamic>{}));
       }
+    }
+    await Future.wait(awaitable);
 
-      await Future.wait(futures);
-      final player = MockAudioEngine.getPlayer(playerId);
-      expect(player?.methodCalls.where((c) => c.method == 'seek').length, iterations);
-    });
+    final transport = player.methodCalls
+        .where((call) => const <String>{'play', 'pause', 'stop'}.contains(call.method))
+        .length;
+    expect(transport, iterations);
+  });
 
-    test('500 frantic play/pause/stop toggles simulate frantic user input without channel congestion', () async {
-      const iterations = 500;
-      final futures = <Future<void>>[];
+  test('500 valid seeks all land on the requested position', () async {
+    const iterations = 500;
+    final futures = <Future<void>>[];
+    for (var i = 0; i < iterations; i++) {
+      futures.add(channel.invokeMethod<void>('seek', <String, dynamic>{
+        'position': i * 1000,
+        'index': i % 3,
+      }));
+    }
+    await Future.wait(futures);
+    expect(
+      player.methodCalls.where((call) => call.method == 'seek').length,
+      iterations,
+    );
+  });
 
-      for (var i = 0; i < iterations; i++) {
-        final action = (i % 3 == 0)
-            ? 'play'
-            : (i % 3 == 1)
-                ? 'pause'
-                : 'stop';
-        futures.add(channel.invokeMethod(action, <String, dynamic>{}));
-      }
+  test('rejected seeks never mutate the position', () async {
+    await channel
+        .invokeMethod<void>('seek', <String, dynamic>{'position': 4000000});
+    expect(player.positionUs, 4000000);
 
-      await Future.wait(futures);
-      final player = MockAudioEngine.getPlayer(playerId);
-      final transportCalls = player?.methodCalls
-          .where((c) => c.method == 'play' || c.method == 'pause' || c.method == 'stop')
-          .length;
-      expect(transportCalls, iterations);
-    });
+    for (var i = 1; i <= 100; i++) {
+      await expectLater(
+        channel.invokeMethod<void>('seek', <String, dynamic>{
+          'position': -i,
+          'index': i % 3,
+        }),
+        throwsA(isA<PlatformException>()
+            .having((e) => e.code, 'code', 'argument_error')),
+      );
+    }
+    expect(player.positionUs, 4000000,
+        reason: 'a rejected seek must leave the position untouched');
+  });
 
-    test('Timer-based asynchronous erratic monkey testing fires interleaved commands cleanly', () async {
-      var completedOperations = 0;
-      final completer = Completer<void>();
-
-      Timer.periodic(const Duration(milliseconds: 2), (timer) {
-        if (completedOperations >= 50) {
-          timer.cancel();
-          if (!completer.isCompleted) completer.complete();
-          return;
-        }
-
-        final tick = completedOperations;
-        switch (tick % 5) {
-          case 0:
-            channel.invokeMethod('play', <String, dynamic>{});
-            break;
-          case 1:
-            channel.invokeMethod('seek', <String, dynamic>{'position': tick * 500000});
-            break;
-          case 2:
-            channel.invokeMethod('setVolume', <String, dynamic>{'volume': (tick % 10) / 10.0});
-            break;
-          case 3:
-            channel.invokeMethod('pause', <String, dynamic>{});
-            break;
-          case 4:
-            channel.invokeMethod('setSpeed', <String, dynamic>{'speed': 1.0 + ((tick % 4) * 0.25)});
-            break;
-        }
-        completedOperations++;
-        if (completedOperations >= 50) {
-          timer.cancel();
-          if (!completer.isCompleted) completer.complete();
-        }
+  test('interleaved volume ramps settle on the last value', () async {
+    for (var i = 0; i <= 100; i++) {
+      await channel.invokeMethod<void>('setVolume', <String, dynamic>{
+        'volume': i / 100.0,
       });
+    }
+    expect(player.volume, 1.0);
 
-      await completer.future;
-      expect(completedOperations, 50);
-    });
+    for (var i = 100; i >= 0; i--) {
+      await channel.invokeMethod<void>('setVolume', <String, dynamic>{
+        'volume': i / 100.0,
+      });
+    }
+    expect(player.volume, 0.0);
+  });
 
-    test('Volume micro-ramping executes 100 micro-fade steps without channel saturation', () async {
-      await channel.invokeMethod('play', <String, dynamic>{});
+  test('a timer-driven command mix interleaves without a lost call', () async {
+    var issued = 0;
+    final completer = Completer<void>();
 
-      for (var i = 100; i >= 0; i--) {
-        await channel.invokeMethod('setVolume', <String, dynamic>{
-          'volume': i / 100.0,
+    Timer.periodic(const Duration(milliseconds: 1), (Timer timer) {
+      if (issued >= 60) {
+        timer.cancel();
+        if (!completer.isCompleted) completer.complete();
+        return;
+      }
+      final tick = issued;
+      final operation = switch (tick % 5) {
+        0 => channel.invokeMethod<void>('play', <String, dynamic>{}),
+        1 => channel.invokeMethod<void>(
+            'seek',
+            <String, dynamic>{'position': tick * 5000}),
+        2 => channel.invokeMethod<void>(
+            'setVolume',
+            <String, dynamic>{'volume': (tick % 10) / 10.0}),
+        3 => channel.invokeMethod<void>('pause', <String, dynamic>{}),
+        _ => channel.invokeMethod<void>(
+            'setSpeed',
+            <String, dynamic>{'speed': 1.0 + (tick % 4) * 0.25}),
+      };
+      issued++;
+      if (issued >= 60) {
+        timer.cancel();
+        operation.whenComplete(() {
+          if (!completer.isCompleted) completer.complete();
         });
       }
-
-      final player = MockAudioEngine.getPlayer(playerId);
-      expect(player?.volume, 0.0);
     });
 
-    test('Mid-load immediate destruction (race condition) does not crash or throw unhandled exceptions', () async {
-      final freshId = 'mid_load_player';
-      await MockAudioEngine.rootChannel.invokeMethod('init', <String, dynamic>{'id': freshId});
-      final freshChannel = MethodChannel('com.ryanheise.just_audio.methods.$freshId');
+    await completer.future.timeout(const Duration(seconds: 5));
+    expect(issued, 60);
+    expect(
+      player.methodCalls
+          .where((call) => const <String>{
+                'play',
+                'pause',
+                'seek',
+                'setVolume',
+                'setSpeed',
+              }.contains(call.method))
+          .length,
+      60,
+    );
+  });
 
-      // 1. Kick off load
-      final loadFuture = freshChannel.invokeMethod('load', <String, dynamic>{
-        'audioSource': <String, dynamic>{
-          'type': 'progressive',
-          'uri': 'https://server10.mp3quran.net/minsh/001.mp3',
-        },
-      });
+  test('disposing mid-load leaves no pending work and no crash', () async {
+    const id = 'mid_load_player';
+    await MockAudioEngine.rootChannel
+        .invokeMethod<void>('init', <String, dynamic>{'id': id});
+    final freshChannel =
+        MethodChannel(MockPlayerInstance.methodChannelName(id));
 
-      // 2. Immediately dispose on same or next microtask
-      final disposeFuture = freshChannel.invokeMethod('dispose', <String, dynamic>{});
-
-      await Future.wait([loadFuture, disposeFuture]);
-      final player = MockAudioEngine.getPlayer(freshId);
-      expect(player?.isDisposed, isTrue);
+    final load = freshChannel.invokeMethod<void>('load', <String, dynamic>{
+      'audioSource': threeTrackPlaylist('mid_load'),
     });
+    final dispose =
+        freshChannel.invokeMethod<void>('dispose', <String, dynamic>{});
+    await Future.wait(<Future<void>>[load, dispose]);
 
-    test('Invocations on already disposed player drop safely without crashing', () async {
-      await channel.invokeMethod('dispose', <String, dynamic>{});
-      final player = MockAudioEngine.getPlayer(playerId);
-      expect(player?.isDisposed, isTrue);
+    expect(MockAudioEngine.getPlayer(id)!.isDisposed, isTrue);
+  });
 
-      // Subsequent calls must not throw
-      await channel.invokeMethod('play', <String, dynamic>{});
-      await channel.invokeMethod('pause', <String, dynamic>{});
-      await channel.invokeMethod('seek', <String, dynamic>{'position': 1000});
-      await channel.invokeMethod('setVolume', <String, dynamic>{'volume': 0.5});
-    });
+  test('a disposed player rejects every method with the disposed code',
+      () async {
+    await channel.invokeMethod<void>('dispose', <String, dynamic>{});
+    for (final method in <String>[
+      'play',
+      'pause',
+      'stop',
+      'seek',
+      'setVolume',
+      'setSpeed',
+      'setLoopMode',
+      'setShuffleMode',
+    ]) {
+      await expectLater(
+        channel.invokeMethod<void>(method, <String, dynamic>{}),
+        throwsA(isA<PlatformException>()
+            .having((e) => e.code, 'code', 'disposed')),
+        reason: '$method should be rejected after dispose',
+      );
+    }
+  });
 
-    test('50-player simultaneous swarm playback with atomic purge', () async {
-      const swarmCount = 50;
-      final playerChannels = <MethodChannel>[];
+  test('50 players can be created, used and purged in one pass', () async {
+    const swarm = 50;
+    final channels = <MethodChannel>[];
+    for (var i = 0; i < swarm; i++) {
+      final id = 'swarm_$i';
+      await MockAudioEngine.rootChannel
+          .invokeMethod<void>('init', <String, dynamic>{'id': id});
+      channels.add(MethodChannel(MockPlayerInstance.methodChannelName(id)));
+    }
+    expect(MockAudioEngine.activePlayers, hasLength(swarm + 1));
 
-      // 1. Initialize 50 players
-      for (var i = 0; i < swarmCount; i++) {
-        final id = 'swarm_player_$i';
-        await MockAudioEngine.rootChannel.invokeMethod('init', <String, dynamic>{'id': id});
-        playerChannels.add(MethodChannel('com.ryanheise.just_audio.methods.$id'));
-      }
-      expect(MockAudioEngine.activePlayers.length, swarmCount + 1);
+    final operations = <Future<void>>[];
+    for (var i = 0; i < swarm; i++) {
+      operations
+        ..add(channels[i].invokeMethod<void>('load', <String, dynamic>{
+          'audioSource': progressiveSource('s$i', 'file:///audio/$i.mp3'),
+        }))
+        ..add(channels[i].invokeMethod<void>(
+            'setVolume', <String, dynamic>{'volume': (i % 10) / 10.0}));
+      // `play` stays pending until pause or end of media, exactly as the
+      // native engine behaves, so it must not be awaited here.
+      unawaited(channels[i].invokeMethod<void>('play', <String, dynamic>{}));
+    }
+    await Future.wait(operations);
 
-      // 2. Concurrently load and play across all 50 players
-      final swarmFutures = <Future<void>>[];
-      for (var i = 0; i < swarmCount; i++) {
-        final ch = playerChannels[i];
-        swarmFutures.add(ch.invokeMethod('load', <String, dynamic>{
-          'audioSource': <String, dynamic>{
-            'type': 'progressive',
-            'uri': 'https://server10.mp3quran.net/minsh/001.mp3',
-          },
-        }));
-        swarmFutures.add(ch.invokeMethod('play', <String, dynamic>{}));
-        swarmFutures.add(ch.invokeMethod('setVolume', <String, dynamic>{
-          'volume': (i % 10) / 10.0,
-        }));
-      }
-      await Future.wait(swarmFutures);
+    for (var i = 0; i < swarm; i++) {
+      expect(MockAudioEngine.getPlayer('swarm_$i')!.playing, isTrue);
+    }
 
-      // 3. Purge all 50 players in one shot
-      await MockAudioEngine.rootChannel.invokeMethod('disposeAllPlayers', <String, dynamic>{});
-      expect(MockAudioEngine.activePlayers.isEmpty, isTrue);
-    });
+    await MockAudioEngine.rootChannel.invokeMethod<void>(
+        'disposeAllPlayers', <String, dynamic>{});
+    expect(MockAudioEngine.activePlayers, isEmpty);
   });
 }

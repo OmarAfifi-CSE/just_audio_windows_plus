@@ -3,12 +3,12 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   exclude:
     - build/**
-    - android/**
-    - ios/**
-    - web/**
+    - coverage/**
+    # Native C++ and WinRT headers are not Dart sources; the Dart analyzer has
+    # nothing to say about them. They are gated by tool/test_native.ps1 and by
+    # the Windows build in CI instead.
     - windows/**
-    - macos/**
-    - linux/**
+    - example/build/**
   language:
     strict-casts: true
     strict-inference: true

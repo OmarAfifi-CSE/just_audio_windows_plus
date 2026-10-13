@@ -6,10 +6,18 @@ on:
   pull_request:
     branches: [ master, main ]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_CHANNEL: 'stable'
+
 jobs:
   validate:
     name: Static Analysis, Tests & Validation
     runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -18,7 +26,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          channel: ${{ env.FLUTTER_CHANNEL }}
           cache: true
 
       - name: Install package dependencies
@@ -43,8 +51,13 @@ jobs:
           cd example
           flutter analyze --fatal-infos
 
+      - name: Run example widget test
+        run: |
+          cd example
+          flutter test
+
       - name: Build Windows example app (Verifies MSVC compilation & linkage)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           cd example
           flutter build windows --debug
@@ -53,6 +66,13 @@ jobs:
         timeout-minutes: 8
         run: ./tool/test_native.ps1 -Configuration Debug
 
+      # Exercises the real compiled plugin on real platform channels. The
+      # fixtures are generated PCM WAV plus a loopback HTTP server, so this
+      # needs no network access and no external media.
+      - name: Run real Windows playback suite (27 scenarios)
+        timeout-minutes: 20
+        run: ./tool/test_windows.ps1 -Mode debug
+
       - name: Upload native test evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -60,3 +80,11 @@ jobs:
           name: windows-native-test-results
           path: |
             example/build/windows/x64/plugins/just_audio_windows_plus/Testing/
+
+      - name: Upload playback suite evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-playback-test-results
+          path: |
+            example/build/native-tests-debug/

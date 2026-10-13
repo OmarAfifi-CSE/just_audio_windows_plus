@@ -1,9 +1,11 @@
+#pragma once
 #pragma comment(lib, "windowsapp")
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include "source_model.hpp"
 #include <functional>
 #include <iostream>
@@ -36,14 +38,6 @@
 #include <winrt/Windows.Media.Playback.h>
 #include <winrt/Windows.System.h>
 
-// One line per method call is useful when debugging and pure noise in production.
-// Trace only in debug builds (#ifndef NDEBUG). Real errors are logged either way.
-#ifndef NDEBUG
-#define JAW_TRACE(expr) do { std::cerr << expr << std::endl; } while (0)
-#else
-#define JAW_TRACE(expr) do { } while (0)
-#endif
-
 #define JAW_ERROR(expr) do { std::cerr << "[just_audio_windows_plus] " << expr << std::endl; } while (0)
 
 using winrt::Windows::Foundation::TimeSpan;
@@ -56,35 +50,12 @@ using flutter::EncodableMap;
 using flutter::EncodableValue;
 
 inline int64_t TimeSpanToMicroseconds(winrt::Windows::Foundation::TimeSpan timespan) {
+  // One tick is 100 nanoseconds; one microsecond is 10 ticks.
   return timespan.count() / 10;
 }
 
 inline int64_t TimeSpanToMilliseconds(winrt::Windows::Foundation::TimeSpan timespan) {
   return timespan.count() / 10000;
-}
-
-// Looks for |key| in |map|, returning the associated value if it is present, or
-// a nullptr if not.
-const EncodableValue* ValueOrNull(const EncodableMap& map, const char* key) {
-  auto it = map.find(EncodableValue(key));
-  if (it == map.end()) {
-    return nullptr;
-  }
-  return &(it->second);
-}
-
-// Safely extracts int64_t from an EncodableValue whether Dart sent int32_t or int64_t
-inline bool TryGetInt64(const EncodableValue* val, int64_t& out) {
-  if (!val) return false;
-  if (const auto* i32 = std::get_if<int32_t>(val)) {
-    out = *i32;
-    return true;
-  }
-  if (const auto* i64 = std::get_if<int64_t>(val)) {
-    out = *i64;
-    return true;
-  }
-  return false;
 }
 
 // Converts a std::string to std::wstring
@@ -144,16 +115,19 @@ public:
     }
   }
 
-  void Success(const EncodableValue& event) {
+  bool Success(const EncodableValue& event) {
     bool schedule_recovery = false;
+    bool delivered = false;
     {
       std::lock_guard<std::mutex> lock(sink_mutex_);
       if (sink) {
         try {
           sink->Success(event);
+          delivered = true;
         } catch (...) {
           try {
             sink->Success(event);
+            delivered = true;
           } catch (...) {
             schedule_recovery = true;
           }
@@ -164,6 +138,7 @@ public:
     // sink through a full-state Broadcast(), and calling it under the lock
     // would deadlock.
     if (schedule_recovery && deferred_recovery_) deferred_recovery_();
+    return delivered;
   }
 
   void Error(const std::string& error_code, const std::string& error_message) {
@@ -193,7 +168,7 @@ public:
     deferred_recovery_ = std::move(hook);
   }
 
-private:
+  private:
   flutter::BinaryMessenger* messenger_ = nullptr;
   std::string id_;
   std::mutex sink_mutex_;
@@ -283,6 +258,8 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   int shuffle_mode_ = 0;
   double volume_ = 1.0;
   double speed_ = 1.0;
+  // Last map handed to the data sink, used to suppress redundant republication.
+  EncodableMap published_data_;
 
   auto Enqueue() {
     std::weak_ptr<AudioPlayer> weak = shared_from_this();
@@ -401,7 +378,15 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
             std::atomic<bool>& flag;
             ~PendingGuard() { flag.store(false); }
           } guard{owner->recovery_broadcast_pending_};
-          owner->Broadcast();
+          try {
+            owner->Broadcast(/*force_data=*/true);
+          } catch (const winrt::hresult_error& error) {
+            owner->Fail(winrt::to_string(error.message()));
+          } catch (const std::exception& error) {
+            owner->Fail(error.what());
+          } catch (...) {
+            owner->Fail("Recovery broadcast failed");
+          }
         }
       });
     } else {
@@ -458,6 +443,9 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     loading_ = false;
     pending_item_ = nullptr;
     completed_ = false;
+    // Roll the source back so a later play() cannot wait on media that will
+    // never open. Load() re-arms it, so a retry after a failure still works.
+    source_set_ = false;
     ClearSeek();
     try { Broadcast(message.empty() ? "Native media source failed" : message); } catch (...) { JAW_ERROR("Unable to broadcast playback failure"); }
     if (pending_load_) {
@@ -474,7 +462,11 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     ApplyShuffle();
   }
   void ApplyShuffle() {
-    if (leaves_.empty()) return;
+    // SetShuffledItems defines the automatic progression order regardless of
+    // ShuffleEnabled, so applying it while shuffling is off would play a
+    // permuted order. just_audio still sends a shuffled `shuffleOrder` with
+    // every load, so this guard is what keeps shuffle-off playback natural.
+    if (shuffle_mode_ != 1 || leaves_.empty()) return;
     std::vector<size_t> order;
     tree_.Order(order);
     std::vector<Playback::MediaPlaybackItem> shuffled;
@@ -493,10 +485,18 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     return Playback::MediaPlaybackItem(media, TimeSpan(std::chrono::microseconds(start)));
   }
 
-  void Load(jaw::SourceNode tree, int64_t index, int64_t position) {
-    const auto size = tree.Size();
-    if (index < 0 || (size && static_cast<uint64_t>(index) >= size) || (!size && index != 0) || position < 0)
+  // Validates the initial seek before any state is touched. Kept separate from
+  // Load() so the caller can reject it as an argument error: Load() runs after
+  // the request result has been moved into pending_load_, where a throw can only
+  // be reported through Fail() as a generic playback failure.
+  static void ValidateInitialSeek(uint64_t size, int64_t index, int64_t position) {
+    if (index < 0 || (size && static_cast<uint64_t>(index) >= size) ||
+        (!size && index != 0) || position < 0)
       throw jaw::ArgumentError{"Invalid initial index or position"};
+  }
+
+  void Load(jaw::SourceNode tree, int64_t index, int64_t position) {
+    ValidateInitialSeek(tree.Size(), index, position);
     std::vector<EncodableMap> leaves;
     tree.Flatten(leaves);
     std::vector<Playback::MediaPlaybackItem> items;
@@ -531,7 +531,11 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     tree.Flatten(leaves);
     auto items = list_.Items();
     auto current = list_.CurrentItem();
-    auto position = player_.PlaybackSession().Position();
+    // Mirrors Broadcast(): WinRT properties can be temporarily unavailable while
+    // the pipeline switches items, and a missing sample must not fail the
+    // mutation.
+    int64_t position = 0;
+    try { position = TimeSpanToMicroseconds(player_.PlaybackSession().Position()); } catch (...) {}
     std::vector<bool> used(leaves_.size(), false);
     std::vector<Playback::MediaPlaybackItem> desired;
     for (const auto& leaf : leaves) {
@@ -542,15 +546,33 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
         desired.push_back(items.GetAt(static_cast<uint32_t>(match)));
       } else desired.push_back(CreateItem(leaf));
     }
-    // Validate and construct every new item before touching the live list.
-    for (uint32_t index = 0; index < desired.size(); ++index) {
-      if (index < items.Size() && items.GetAt(index) == desired[index]) continue;
-      uint32_t found = index;
-      while (found < items.Size() && items.GetAt(found) != desired[index]) ++found;
-      if (found < items.Size()) items.RemoveAt(found);
-      items.InsertAt(index, desired[index]);
+    // Snapshot original items for transactional rollback if any WinRT COM mutation fails.
+    std::vector<Playback::MediaPlaybackItem> original_items;
+    for (uint32_t i = 0; i < items.Size(); ++i) {
+      original_items.push_back(items.GetAt(i));
     }
-    while (items.Size() > desired.size()) items.RemoveAtEnd();
+
+    try {
+      // Validate and construct every new item before touching the live list.
+      for (uint32_t index = 0; index < desired.size(); ++index) {
+        if (index < items.Size() && items.GetAt(index) == desired[index]) continue;
+        uint32_t found = index;
+        while (found < items.Size() && items.GetAt(found) != desired[index]) ++found;
+        if (found < items.Size()) items.RemoveAt(found);
+        items.InsertAt(index, desired[index]);
+      }
+      while (items.Size() > desired.size()) items.RemoveAtEnd();
+    } catch (...) {
+      try {
+        items.Clear();
+        for (const auto& item : original_items) {
+          items.Append(item);
+        }
+      } catch (...) {
+        JAW_ERROR("Failed to rollback MediaPlaybackList after mutation exception");
+      }
+      throw;
+    }
     tree_ = std::move(tree);
     leaves_ = std::move(leaves);
     // A playlist that was loaded empty never attached the list to the player;
@@ -564,7 +586,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       list_.MoveTo(static_cast<uint32_t>(found - desired.begin()));
       requested_index_ = static_cast<int64_t>(found - desired.begin());
       seek_pending_ = true;
-      seek_position_ = TimeSpanToMicroseconds(position);
+      seek_position_ = position;
     }
     if (leaves_.empty()) { completed_ = true; CompletePlay(); }
     Broadcast();
@@ -581,6 +603,11 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
         auto tree = jaw::SourceNode::Parse(jaw::Require<EncodableMap>(*args, "audioSource"));
         auto index = jaw::OptionalInteger(*args, "initialIndex");
         auto position = jaw::OptionalInteger(*args, "initialPosition");
+        // Everything that can reject the request as malformed runs while this
+        // call still owns its result, so the caller gets argument_error. Once
+        // the result moves into pending_load_ the only way out is Fail(), which
+        // reports a generic playback failure instead.
+        ValidateInitialSeek(tree.Size(), index, position);
         // Cancel the previous load even when the new request later fails.
         CancelLoad("Replaced by a new load");
         failed_ = false;
@@ -590,8 +617,24 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       } else if (method == "play") {
         player_.Play();
         playing_ = true;
+        // Bounded queue protection: coalesce rapid successive play calls so callers
+        // don't accumulate unbounded memory under abusive invocations.
+        if (pending_play_.size() > 10) {
+          CompletePlay();
+        }
         pending_play_.push_back(std::move(result));
-        if (completed_ || failed_) CompletePlay();
+        // A play settles when MediaEnded or Pause fires. Settle it here only
+        // when the engine state is *stably* unplayable, so the future can never
+        // be reached by an event that is still coming.
+        //
+        // A missing source is deliberately NOT one of those conditions:
+        // just_audio's platform activation sends `play` before `load`, so a play
+        // that arrives with nothing attached is the normal first-play path, and
+        // settling it would resolve `await player.play()` before the track even
+        // starts. Load() settles the play instead when the loaded source turns
+        // out to be unplayable, and Fail() settles it when the load errors.
+        if (completed_ || failed_ || (source_set_ && leaves_.empty()))
+          CompletePlay();
         // Restarting after a natural end must re-arm the completion lifecycle:
         // without clearing the flag the plugin keeps reporting
         // ProcessingState.completed forever, so just_audio never sees `ready`
@@ -602,7 +645,15 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       } else if (method == "pause" || method == "stop") {
         player_.Pause();
         playing_ = false;
-        if (method == "stop") player_.PlaybackSession().Position(TimeSpan::zero());
+        if (method == "stop") {
+          player_.PlaybackSession().Position(TimeSpan::zero());
+          // Drop both the in-flight seek and the deferred one: the deferred
+          // position is applied by Opened() when the item opens, so leaving it
+          // set would undo the rewind.
+          ClearSeek();
+          seek_pending_ = false;
+          seek_position_ = 0;
+        }
         CompletePlay();
       } else if (method == "setVolume" || method == "setSpeed") {
         auto value = jaw::Require<double>(*args, method == "setVolume" ? "volume" : "speed");
@@ -684,6 +735,10 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     return 3;
   }
   void Broadcast(const std::string& error = {}) {
+    Broadcast(/*force_data=*/false, error);
+  }
+
+  void Broadcast(bool force_data, const std::string& error = {}) {
     if (disposed_ || !player_) return;
     auto session = player_.PlaybackSession();
     // WinRT properties can be temporarily unavailable while opening or
@@ -720,12 +775,20 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     int64_t reportedIndex = -1;
     if (loading_) reportedIndex = static_cast<int64_t>(requested_index_);
     else if (indexKnown) reportedIndex = static_cast<int64_t>(rawIndex);
+    // bufferedPosition drives the app's buffer bar, so it must never exceed the
+    // duration. The position itself is deliberately not clamped to the
+    // duration: across an item switch the session can still be describing the
+    // previous item, and clamping to that stale duration would report a
+    // position the user never seeked to.
+    const auto buffered = duration > 0
+      ? (std::min)((std::max)(position, ClampBufferedPosition(duration, progress)), duration)
+      : (std::max)(position, ClampBufferedPosition(duration, progress));
     auto now = std::chrono::system_clock::now();
     EncodableMap event{
       {EncodableValue("processingState"), EncodableValue(ProcessingState())},
       {EncodableValue("updatePosition"), EncodableValue(position)},
       {EncodableValue("updateTime"), EncodableValue(static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()))},
-      {EncodableValue("bufferedPosition"), EncodableValue((std::max)(position, ClampBufferedPosition(duration, progress)))},
+      {EncodableValue("bufferedPosition"), EncodableValue(buffered)},
       {EncodableValue("duration"), duration > 0 ? EncodableValue(duration) : EncodableValue()},
       {EncodableValue("currentIndex"), reportedIndex >= 0 ? EncodableValue(reportedIndex) : EncodableValue()}
     };
@@ -734,12 +797,31 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       event[EncodableValue("errorMessage")] = EncodableValue(error);
     }
     if (event_sink_) event_sink_->Success(event);
-    if (data_sink_) data_sink_->Success(EncodableMap{
+    PublishData(force_data);
+  }
+
+  // The player-data map is the player's *intent*, not a progress report: it
+  // carries playing, volume, speed, loop and shuffle. just_audio applies every
+  // value it receives, so a redundant copy of an unchanged value is not free -
+  // it can overwrite a newer decision Dart has already made. It is therefore
+  // published only when one of those values actually changes.
+  //
+  // Crucially, published_data_ is committed only after successful delivery to
+  // the sink. If delivery fails or is retried/recovered, the state can be
+  // re-delivered or forced without being trapped behind a stale cache.
+  void PublishData(bool force = false) {
+    EncodableMap data{
       {EncodableValue("playing"), EncodableValue(playing_)},
       {EncodableValue("volume"), EncodableValue(volume_)},
       {EncodableValue("speed"), EncodableValue(speed_)},
       {EncodableValue("loopMode"), EncodableValue(loop_mode_)},
       {EncodableValue("shuffleMode"), EncodableValue(shuffle_mode_)}
-    });
+    };
+    if (!force && data == published_data_) return;
+    if (data_sink_) {
+      if (data_sink_->Success(data)) {
+        published_data_ = std::move(data);
+      }
+    }
   }
 };

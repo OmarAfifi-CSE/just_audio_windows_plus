@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <functional>
+#include <iostream>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -128,7 +129,18 @@ class PlatformThreadDispatcher {
     }
     for (auto& task : tasks) {
       if (!available()) break;
-      task();
+      // This runs inside a WndProc, which is a C callback boundary. An
+      // exception escaping it would reach the OS message loop and terminate the
+      // process, so a failing task is contained here rather than trusted. Every
+      // task the plugin posts already handles its own errors; this is the
+      // backstop that keeps a bug in one of them from being fatal.
+      try {
+        task();
+      } catch (const std::exception& error) {
+        std::cerr << "[just_audio_windows_plus] Platform thread task threw: " << error.what() << std::endl;
+      } catch (...) {
+        std::cerr << "[just_audio_windows_plus] Platform thread task threw unknown exception" << std::endl;
+      }
     }
   }
 

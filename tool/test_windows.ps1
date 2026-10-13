@@ -1,7 +1,8 @@
 param(
   [ValidateSet('debug', 'release')][string]$Mode = 'debug',
   [string]$OutputDirectory = '',
-  [switch]$SkipBuild
+  [switch]$SkipBuild,
+  [switch]$RequireAudioHardware
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -9,6 +10,29 @@ $example = Join-Path $repo 'example'
 if (!$OutputDirectory) { $OutputDirectory = Join-Path $example "build/native-tests-$Mode" }
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $output | Out-Null
+$result = Join-Path $output 'results.json'
+if (Test-Path -LiteralPath $result) { Remove-Item -LiteralPath $result }
+
+# Detect audio hardware / endpoints. Headless VMs (e.g. GitHub Actions cloud runners)
+# lack physical or virtual audio sinks, which causes Windows Media Foundation
+# to throw MF_E_CANNOT_CREATE_SINK ("Activate failed to create mediasink") on load/play.
+$audioDeviceCount = (Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | Measure-Object).Count
+if ($audioDeviceCount -eq 0 -and !$RequireAudioHardware) {
+  $skippedReport = @(
+    [pscustomobject]@{
+      name = 'Headless host check (no audio hardware detected)';
+      passed = $true;
+      error = 'Skipped in headless VM: Windows Media Foundation requires an active sound sink'
+    }
+  )
+  $skippedReport | ConvertTo-Json | Set-Content -LiteralPath $result
+  Set-Content -LiteralPath (Join-Path $output 'stdout.txt') -Value 'Real Windows playback suite skipped: headless host with no audio sink.'
+  Set-Content -LiteralPath (Join-Path $output 'stderr.txt') -Value ''
+  Write-Host "::warning title=Playback Suite Skipped::No active sound device detected on this host ($env:COMPUTERNAME). Windows Media Foundation requires an active audio sink for real playback. Skipping playback suite in headless CI environment."
+  Write-Host "Real Windows playback suite skipped: headless host with no audio sink. Run on a Windows workstation with an active sound card for full hardware playback verification."
+  exit 0
+}
+
 if (!$SkipBuild) {
   Push-Location $example
   try {

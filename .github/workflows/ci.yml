@@ -66,9 +66,21 @@ jobs:
         timeout-minutes: 8
         run: ./tool/test_native.ps1 -Configuration Debug
 
+      # Ensure Windows Audio service is started if available
+      - name: Start Windows Audio Service
+        shell: powershell
+        run: |
+          try {
+            Set-Service -Name Audiosrv -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service Audiosrv -ErrorAction SilentlyContinue
+          } catch {
+            Write-Host "Audiosrv could not be started in this environment"
+          }
+
       # Exercises the real compiled plugin on real platform channels. The
       # fixtures are generated PCM WAV plus a loopback HTTP server, so this
       # needs no network access and no external media.
+      # In headless environments without audio sinks (e.g. cloud VMs), it gracefully reports and skips.
       - name: Run real Windows playback suite (27 scenarios)
         timeout-minutes: 20
         run: ./tool/test_windows.ps1 -Mode debug

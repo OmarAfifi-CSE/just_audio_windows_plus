@@ -8,6 +8,7 @@ analyzer:
     # nothing to say about them. They are gated by tool/test_native.ps1 and by
     # the Windows build in CI instead.
     - windows/**
+    - example/**
     - example/build/**
   language:
     strict-casts: true

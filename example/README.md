@@ -1,17 +1,26 @@
-# just_audio_windows_plus_example
+# just_audio_windows_plus — Example
 
-A new Flutter project.
+Live showcase for [`just_audio_windows_plus`](https://pub.dev/packages/just_audio_windows_plus) — a hardened WinRT `MediaPlayer` engine for `just_audio` on Windows.
 
-## Getting Started
+![Showcase](../screenshots/desktop_player_showcase.png)
 
-This project is a starting point for a Flutter application.
+## Run
 
-A few resources to get you started if this is your first Flutter project:
+```powershell
+flutter pub get
+flutter run -d windows
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Requirements: Windows 10/11, Flutter `>=3.10.0`.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## What it demonstrates
+
+- `setUrl` / `setFilePath` / `setAsset` single-track playback
+- `ConcatenatingAudioSource` playlists with `LoopMode` and shuffle
+- `seek`, `seekToNext` / `seekToPrevious`, volume & speed
+- `playerStateStream` / `positionStream` / `durationStream` wiring
+- Error handling via `PlayerException` on 404 / missing files
+
+> Zero native setup. `just_audio_windows_plus` is discovered automatically as the `just_audio` Windows implementation — just add `just_audio: ^0.10.6` and this package.
+
+See the repository [README](../README.md) for the full quickstart and the production `DesktopAudioBar` widget.

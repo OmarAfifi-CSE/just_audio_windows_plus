@@ -232,7 +232,14 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   std::unique_ptr<flutter::MethodChannel<EncodableValue>> player_channel_;
   std::unique_ptr<JustAudioEventSink> event_sink_;
   std::unique_ptr<JustAudioEventSink> data_sink_;
+  // Bound on consecutive recovery-broadcast rounds. Delivery failure under
+  // exhaustion would otherwise schedule each next round from the previous
+  // one; after this many rounds the loop is abandoned until a state event is
+  // delivered successfully again.
+  static constexpr int kMaxRecoveryAttempts = 3;
   std::atomic<bool> recovery_broadcast_pending_{false};
+  std::atomic<bool> recovery_reschedule_requested_{false};
+  std::atomic<int> recovery_attempts_{0};
   Playback::MediaPlayer player_{nullptr};
   Playback::MediaPlaybackList list_{nullptr};
   std::vector<std::function<void()>> revoke_;
@@ -240,7 +247,10 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   std::vector<EncodableMap> leaves_;
   std::unique_ptr<Result> pending_load_;
   std::vector<std::unique_ptr<Result>> pending_play_;
-  uint64_t generation_ = 0;
+  // Atomic because PostRecoveryBroadcast() captures it before posting, and
+  // that entry point is documented as callable from any thread. Every other
+  // access is serialized on the platform thread.
+  std::atomic<uint64_t> generation_{0};
   bool disposed_ = false;
   bool source_set_ = false;
   bool loading_ = false;
@@ -251,6 +261,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   int64_t seek_position_ = 0;
   bool seek_in_progress_ = false;
   int64_t target_seek_position_ = 0;
+  std::atomic<uint64_t> seek_generation_{0};
   std::chrono::steady_clock::time_point seek_deadline_{};
   int64_t requested_index_ = 0;
   Playback::MediaPlaybackItem pending_item_{nullptr};
@@ -264,7 +275,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   auto Enqueue() {
     std::weak_ptr<AudioPlayer> weak = shared_from_this();
     std::weak_ptr<PlatformThreadDispatcher> dispatcher = dispatcher_;
-    const auto generation = generation_;
+    const auto generation = generation_.load();
     return [weak, dispatcher, generation](std::function<void(AudioPlayer&)> action) {
       if (auto queue = dispatcher.lock()) {
         queue->Post([weak, generation, action = std::move(action)] {
@@ -315,10 +326,14 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       enqueue([](AudioPlayer& owner) { owner.Broadcast(); });
     });
     revoke_.push_back([session, download] { session.DownloadProgressChanged(download); });
-    auto seekCompleted = session.SeekCompleted([enqueue](auto, auto) {
-      enqueue([](AudioPlayer& owner) {
-        owner.seek_in_progress_ = false;
-        owner.Broadcast();
+    // Capture seek generation on the WinRT thread-pool before posting so
+    // an earlier seek's SeekCompleted cannot clear a newer fake-position.
+    std::weak_ptr<AudioPlayer> seekWeak = weak_from_this();
+    auto seekCompleted = session.SeekCompleted([enqueue, seekWeak](auto, auto) {
+      uint64_t gen = 0;
+      if (auto sp = seekWeak.lock()) gen = sp->seek_generation_.load();
+      enqueue([gen](AudioPlayer& owner) {
+        owner.OnSeekCompleted(gen);
       });
     });
     revoke_.push_back([session, seekCompleted] { session.SeekCompleted(seekCompleted); });
@@ -366,31 +381,78 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   // exclusively inside the posted action, on the dispatcher thread, keeping
   // the exact threading discipline of every other native path.
   void PostRecoveryBroadcast() {
-    if (recovery_broadcast_pending_.exchange(true)) return;
+    if (recovery_broadcast_pending_.exchange(true)) {
+      recovery_reschedule_requested_.store(true);
+      return;
+    }
+    // Bound the self-retry loop: under sustained delivery failure each
+    // recovery round immediately schedules the next one. The budget resets
+    // whenever a state event is delivered successfully (see Broadcast), so a
+    // later transient failure gets a fresh budget instead of a wedged loop.
+    if (recovery_attempts_.fetch_add(1) >= kMaxRecoveryAttempts) {
+      recovery_reschedule_requested_.store(false);
+      recovery_broadcast_pending_.store(false);
+      JAW_ERROR("Recovery broadcast abandoned after " << kMaxRecoveryAttempts << " attempts");
+      return;
+    }
+    const auto generation_at_post = generation_.load();
     std::weak_ptr<AudioPlayer> weak = weak_from_this();
     std::weak_ptr<PlatformThreadDispatcher> dispatcher = dispatcher_;
     if (auto queue = dispatcher.lock()) {
-      queue->Post([weak] {
-        if (auto owner = weak.lock()) {
-          // Keep the dedupe flag active while Broadcast() runs so that any
-          // send failure during recovery cannot trigger recursive re-entry.
-          struct PendingGuard {
-            std::atomic<bool>& flag;
-            ~PendingGuard() { flag.store(false); }
-          } guard{owner->recovery_broadcast_pending_};
-          try {
-            owner->Broadcast(/*force_data=*/true);
-          } catch (const winrt::hresult_error& error) {
-            owner->Fail(winrt::to_string(error.message()));
-          } catch (const std::exception& error) {
-            owner->Fail(error.what());
-          } catch (...) {
-            owner->Fail("Recovery broadcast failed");
+      bool posted = false;
+      try {
+        posted = queue->Post([weak, generation_at_post] {
+          if (auto owner = weak.lock()) {
+            if (owner->disposed_ || owner->generation_ != generation_at_post) {
+              owner->recovery_attempts_.store(0);
+              owner->recovery_broadcast_pending_.store(false);
+              if (owner->recovery_reschedule_requested_.exchange(false)) {
+                owner->PostRecoveryBroadcast();
+              }
+              return;
+            }
+            struct ReschedulingGuard {
+              AudioPlayer* owner;
+              ~ReschedulingGuard() {
+                owner->recovery_broadcast_pending_.store(false);
+                if (owner->recovery_reschedule_requested_.exchange(false)) {
+                  // Runs in a noexcept destructor: a throw here would
+                  // terminate the process, so contain it explicitly.
+                  try { owner->PostRecoveryBroadcast(); }
+                  catch (...) { JAW_ERROR("Unable to reschedule recovery broadcast"); }
+                } else {
+                  owner->recovery_attempts_.store(0);
+                }
+              }
+            } guard{owner.get()};
+            try {
+              owner->Broadcast(/*force_data=*/true);
+            } catch (const winrt::hresult_error& error) {
+              owner->Fail(winrt::to_string(error.message()));
+            } catch (const std::exception& error) {
+              owner->Fail(error.what());
+            } catch (...) {
+              owner->Fail("Recovery broadcast failed");
+            }
           }
+        });
+      } catch (...) {
+        // Post() allocates; under exhaustion it can throw instead of
+        // returning false. Treat that as a failed post so the pending flag
+        // cannot wedge on a task that will never run.
+        posted = false;
+      }
+      if (!posted) {
+        recovery_broadcast_pending_.store(false);
+        if (recovery_reschedule_requested_.exchange(false)) {
+          PostRecoveryBroadcast();
         }
-      });
+      }
     } else {
       recovery_broadcast_pending_.store(false);
+      if (recovery_reschedule_requested_.exchange(false)) {
+        PostRecoveryBroadcast();
+      }
     }
   }
 
@@ -411,9 +473,24 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   // reports the target position instead of the stale one. A deadline guards
   // against SeekCompleted never firing (item switch, pipeline abort, failure).
   void BeginSeek(int64_t position) {
+    // Serialize seek intents: a new seek overwrites the target but extends
+    // the deadline only if later, and a SeekCompleted for an earlier seek
+    // must not clear the newer target.
     seek_in_progress_ = true;
     target_seek_position_ = position;
+    seek_generation_++;
+    // Built from a monotonic clock, so this can only ever move the deadline
+    // forward: a rapid scrub can never shorten an already-armed window.
     seek_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  }
+
+  void OnSeekCompleted(uint64_t generation_at_post) {
+    // Only called via Enqueue on platform thread for the MediaPlayer's own
+    // SeekCompleted. Ignore completions for an earlier seek that was
+    // superseded by a newer BeginSeek — otherwise the fake position snaps.
+    if (generation_at_post != seek_generation_) return;
+    seek_in_progress_ = false;
+    Broadcast();
   }
   void ClearSeek() {
     seek_in_progress_ = false;
@@ -546,10 +623,17 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
         desired.push_back(items.GetAt(static_cast<uint32_t>(match)));
       } else desired.push_back(CreateItem(leaf));
     }
-    // Snapshot original items for transactional rollback if any WinRT COM mutation fails.
+    // Snapshot original items for transactional rollback if any WinRT COM
+    // mutation fails. Snapshot itself can throw (COM), so it must not mutate
+    // the live list on failure.
     std::vector<Playback::MediaPlaybackItem> original_items;
-    for (uint32_t i = 0; i < items.Size(); ++i) {
-      original_items.push_back(items.GetAt(i));
+    try {
+      for (uint32_t i = 0; i < items.Size(); ++i) {
+        original_items.push_back(items.GetAt(i));
+      }
+    } catch (...) {
+      JAW_ERROR("Failed to snapshot MediaPlaybackList for transactional mutate");
+      throw;
     }
 
     try {
@@ -563,13 +647,38 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       }
       while (items.Size() > desired.size()) items.RemoveAtEnd();
     } catch (...) {
+      // In-place restore without Clear(): Clear()+Append can truncate on OOM
+      // precisely when rollback is most needed. Restore by trimming and
+      // patching individual indices so a second OOM leaves prefix intact.
+      bool rollback_ok = true;
       try {
-        items.Clear();
-        for (const auto& item : original_items) {
-          items.Append(item);
+        while (items.Size() > original_items.size()) {
+          items.RemoveAtEnd();
+        }
+        while (items.Size() < original_items.size()) {
+          items.Append(original_items[items.Size()]);
+        }
+        for (uint32_t i = 0; i < original_items.size(); ++i) {
+          if (items.GetAt(i) != original_items[i]) {
+            items.RemoveAt(i);
+            items.InsertAt(i, original_items[i]);
+          }
         }
       } catch (...) {
+        rollback_ok = false;
         JAW_ERROR("Failed to rollback MediaPlaybackList after mutation exception");
+      }
+      // If in-place rollback also failed, the list may be truncated/corrupt.
+      // Escalate to a clean reset so the engine does not retain a half-state
+      // that corrupts future Broadcast/ApplyShuffle. The tree_ has not yet been
+      // committed, so Dart and native can re-converge on next Load.
+      if (!rollback_ok) {
+        try {
+          // Best-effort: detach source and rebuild from committed tree_
+          // (old tree_, not the mutated one) on next Load. For now, ensure
+          // list is at least empty rather than half-truncated.
+          items.Clear();
+        } catch (...) {}
       }
       throw;
     }
@@ -617,12 +726,23 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       } else if (method == "play") {
         player_.Play();
         playing_ = true;
-        // Bounded queue protection: coalesce rapid successive play calls so callers
-        // don't accumulate unbounded memory under abusive invocations.
-        if (pending_play_.size() > 10) {
-          CompletePlay();
+        // Coalesce rapid successive play calls: keep at most one pending play
+        // future so a double-tap (or 10 Hz spam) does not leak unbounded
+        // MethodResults. just_audio may send a second play request while one
+        // is in flight (a load() racing play()); its contract says the
+        // platform "should ignore the second play request since it is already
+        // playing" and that a play issued while already playing "completes
+        // immediately" - so the arriving request settles now as "play
+        // accepted", while the request already bound to the playback
+        // lifecycle keeps waiting for the terminal event (pause/stop/end/
+        // fail). Settling the newest instead of the oldest matters: the
+        // earlier request is the one whose caller may be awaiting playback,
+        // and resolving it early would report completion mid-playback.
+        if (!pending_play_.empty()) {
+          result->Success(EncodableMap());
+        } else {
+          pending_play_.push_back(std::move(result));
         }
-        pending_play_.push_back(std::move(result));
         // A play settles when MediaEnded or Pause fires. Settle it here only
         // when the engine state is *stably* unplayable, so the future can never
         // be reached by an event that is still coming.
@@ -796,7 +916,11 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       event[EncodableValue("errorCode")] = EncodableValue(int32_t{1});
       event[EncodableValue("errorMessage")] = EncodableValue(error);
     }
-    if (event_sink_) event_sink_->Success(event);
+    if (event_sink_ && event_sink_->Success(event)) {
+      // A delivered state event ends any delivery-failure epoch: the next
+      // failure gets a fresh recovery budget instead of an exhausted one.
+      recovery_attempts_.store(0);
+    }
     PublishData(force_data);
   }
 

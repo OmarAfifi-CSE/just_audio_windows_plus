@@ -127,8 +127,10 @@ class PlatformThreadDispatcher {
       std::lock_guard<std::mutex> lock(mutex_);
       tasks.swap(tasks_);
     }
+    // The queue is already swapped — every captured promise (pending_load_,
+    // pending_play_) must be settled even if the window was destroyed mid-swap.
+    // Dropping the remainder would leave Dart Futures hanging forever.
     for (auto& task : tasks) {
-      if (!available()) break;
       // This runs inside a WndProc, which is a C callback boundary. An
       // exception escaping it would reach the OS message loop and terminate the
       // process, so a failing task is contained here rather than trusted. Every

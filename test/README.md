@@ -2,7 +2,7 @@
 
 Three independent suites verify this package. Run all of them before a release.
 
-## 1. Dart channel-contract tests (100 tests, any OS)
+## 1. Dart channel-contract tests (101 tests, any OS)
 
 From the repository root:
 
@@ -19,16 +19,18 @@ them worth running - a test written against this fake is a statement about the
 plugin's actual channel contract, so the native side and the fake must be
 changed together.
 
-Two things the fake deliberately does **not** model, because they need a real
+The fake deliberately does **not** model one thing, because it needs a real
 media pipeline: it resolves `load` synchronously rather than tracking a load
-that is replaced or aborted while still pending, and it keeps a single
-outstanding `play()` future rather than the native `pending_play_` queue. Both
-are covered against the real plugin by suite 2.
+that is replaced or aborted while still pending. That gap is covered against
+the real plugin by suite 2.
 
 The fake does model the part of `Broadcast()` that decides *what* is published:
 the state map is a sample and always goes out, while the data map is intent and
-is published only when a value changes. If the native dedupe or the play-settle
-rule changes, the Dart suite is where that divergence shows up.
+is published only when a value changes. It also models the bounded
+`pending_play_` coalescing: a `play()` arriving while one is in flight settles
+immediately, while the lifecycle-bound request stays pending. If the native
+dedupe, play-settle, or coalescing rules change, the Dart suite is where that
+divergence shows up.
 
 The example's widget test runs separately:
 

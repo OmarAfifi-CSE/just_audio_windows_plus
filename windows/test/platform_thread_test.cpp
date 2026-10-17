@@ -115,7 +115,7 @@ TEST(PlatformThreadDispatcher, AThrowingTaskIsContainedAndTheBatchContinues) {
   EXPECT_EQ(calls, (std::vector<int>{1, 2}));
 }
 
-TEST(PlatformThreadDispatcher, ShutdownInsideCallbackDropsRestOfDrainedBatch) {
+TEST(PlatformThreadDispatcher, ShutdownInsideCallbackDrainsAlreadySwappedBatch) {
   PlatformThreadDispatcher dispatcher;
   ASSERT_TRUE(dispatcher.available());
   int calls = 0;
@@ -123,6 +123,8 @@ TEST(PlatformThreadDispatcher, ShutdownInsideCallbackDropsRestOfDrainedBatch) {
   ASSERT_TRUE(dispatcher.Post([&] { ++calls; }));
   PumpMessages();
   EXPECT_FALSE(dispatcher.available());
-  EXPECT_EQ(calls, 0);
+  // Drain() swaps the queue first and runs every captured task, even after
+  // Shutdown() invalidated window_ mid-batch, so pending futures settle.
+  EXPECT_EQ(calls, 1);
 }
 }  // namespace

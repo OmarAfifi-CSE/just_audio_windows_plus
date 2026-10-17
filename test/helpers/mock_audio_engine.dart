@@ -11,11 +11,10 @@ import 'package:flutter_test/flutter_test.dart';
 /// is therefore a statement about the plugin's actual channel contract. If the
 /// C++ contract changes, this file must change with it.
 ///
-/// Scope limits, deliberately: this fake resolves `load` synchronously, so it
-/// does not model a load that is replaced or aborted while still pending, and
-/// it tracks a single outstanding `play()` future rather than the native
-/// `pending_play_` queue. Both are covered against the real plugin by the
-/// integration suite in `example/integration_test/native_audio_test.dart`.
+/// Scope limit, deliberately: this fake resolves `load` synchronously, so it
+/// does not model a load that is replaced or aborted while still pending.
+/// That gap is covered against the real plugin by the integration suite in
+/// `example/integration_test/native_audio_test.dart`.
 class ChannelContractError extends PlatformException {
   ChannelContractError(String code, String message)
       : super(code: code, message: message);
@@ -342,10 +341,12 @@ class MockPlayerInstance {
   /// The data maps actually delivered, in order.
   final List<Map<String, dynamic>> deliveredData = <Map<String, dynamic>>[];
 
-  /// Mirrors the native `pending_play_` queue, which only `CompletePlay()`
-  /// drains. A single slot rather than a queue, which is enough for the
-  /// pause/completion semantics the contract tests assert.
-  final Completer<void> pendingPlay = Completer<void>();
+  /// Mirrors the native `pending_play_` list, which is bounded and coalesced:
+  /// a play arriving while one is already pending settles immediately, while
+  /// the request bound to the playback lifecycle stays pending.
+  Completer<void>? pendingPlay;
+  Completer<void> _ensurePendingPlay() =>
+      pendingPlay ??= Completer<void>();
 
   static String methodChannelName(String id) =>
       'com.ryanheise.just_audio.methods.$id';
@@ -464,7 +465,9 @@ class MockPlayerInstance {
   }
 
   void completePlay() {
-    if (!pendingPlay.isCompleted) pendingPlay.complete();
+    final c = pendingPlay;
+    if (c != null && !c.isCompleted) c.complete();
+    pendingPlay = null;
   }
 
   /// Mirrors `Fail()`: roll the source back and surface the error.
@@ -490,11 +493,11 @@ class MockPlayerInstance {
     }
     // The state map is a sample and is always published.
     eventController.add(event);
-    if (forceData || dataWouldChange) publishData();
+    if (forceData || dataWouldChange) publishData(forceData: forceData);
   }
 
   /// Mirrors the data half of `Broadcast()`.
-  void publishData() {
+  void publishData({bool forceData = false}) {
     publishedData = dataEvent;
     deliveredData.add(publishedData);
     dataController.add(publishedData);
@@ -729,10 +732,13 @@ class MockAudioEngine {
 
       case 'play':
         player.playing = true;
-        // Mirrors the native settle rule: a play is settled only when the state
-        // is *stably* unplayable. A missing source is not one of those cases,
-        // because just_audio's activation sends `play` before `load`; settling
-        // it there would resolve `await player.play()` before playback starts.
+        // A play arriving while one is already pending settles immediately
+        // ("ignore the second play request since it is already playing");
+        // the request bound to the playback lifecycle stays pending until the
+        // terminal event.
+        final existing = player.pendingPlay;
+        final coalesced = existing != null && !existing.isCompleted;
+        final myPlay = coalesced ? null : player._ensurePendingPlay();
         if (player.completed ||
             player.failed ||
             (player.sourceSet && player.leaves.isEmpty)) {
@@ -740,7 +746,7 @@ class MockAudioEngine {
         }
         player.completed = false;
         player.broadcastState();
-        await player.pendingPlay.future;
+        if (myPlay != null) await myPlay.future;
         return <String, dynamic>{};
 
       case 'pause':

@@ -1,0 +1,13 @@
+# Publish ignore — federated plugin.
+# `dart pub publish` prefers this file over .gitignore; the patterns below
+# are listed explicitly so build artifacts are never packed.
+/.dart_tool/
+/build/
+**/build/
+/coverage/
+**/coverage/
+example/build/
+tool/
+windows/build/
+pubspec.lock
+example/pubspec.lock

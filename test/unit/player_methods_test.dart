@@ -271,6 +271,30 @@ void main() {
       expect(player.playing, isFalse);
     });
 
+    test('a second play while one is pending resolves immediately', () async {
+      // just_audio may send a second play request while one is in flight (a
+      // load() racing play()); the platform settles the arriving request at
+      // once - "ignore the second play request since it is already playing" -
+      // and the first stays bound to the playback lifecycle.
+      var firstCompleted = false;
+      final first = channel
+          .invokeMethod<void>('play', <String, dynamic>{})
+          .then((_) => firstCompleted = true);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(firstCompleted, isFalse);
+
+      await channel
+          .invokeMethod<void>('play', <String, dynamic>{})
+          .timeout(const Duration(seconds: 1));
+      expect(player.playing, isTrue);
+      expect(firstCompleted, isFalse,
+          reason: 'the first play must stay pending until pause or end');
+
+      await channel.invokeMethod<void>('pause', <String, dynamic>{});
+      await first;
+      expect(firstCompleted, isTrue);
+    });
+
     test('play with no source stays pending, as just_audio expects', () async {
       // just_audio's platform activation sends `play` before `load`, so a play
       // that arrives with nothing attached must stay pending. Settling it would

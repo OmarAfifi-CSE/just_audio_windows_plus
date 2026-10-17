@@ -57,7 +57,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 
 See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 
-| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.4) |
+| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.5) |
 |---|:---:|:---:|
 | **Platform Thread Marshalling** | ❌ Background Threadpool (Engine logs non-platform thread warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`) serialization** |
 | **C++ Toolchain Standard** | ❌ C++17 (Breaks on modern MSVC 14.51 / VS 2026 `STL1011`) | ✅ **Modern C++20 Core (Clean `/W4 /WX` on VS 2026)** |
@@ -88,7 +88,7 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.10.6
-  just_audio_windows_plus: ^0.5.4
+  just_audio_windows_plus: ^0.5.5
 ```
 
 > [!TIP]

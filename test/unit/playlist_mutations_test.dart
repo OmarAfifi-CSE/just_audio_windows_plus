@@ -194,6 +194,81 @@ void main() {
     });
   });
 
+  group('removing the current item', () {
+    // The native engine advances to the item that shifts into the removed
+    // item's position, exactly as the Android implementation does; without
+    // that advance the list reports no current item and playback wedges.
+    test('advances playback to the item that shifted into place', () async {
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'index': 0,
+        'position': 120000,
+      });
+      expect(player.currentIndex, 0);
+
+      await removeRange(0, 1, <int>[0, 1]);
+      expect(player.currentIndex, 0,
+          reason: 'the item that shifted into slot 0 becomes current');
+      expect(player.seekPending, isTrue,
+          reason: 'the shifted-in item starts from its beginning');
+      expect(player.positionUs, 0);
+      expect(player.leaves.map((leaf) => leaf['id']),
+          <String>['root-1', 'root-2']);
+    });
+
+    test('removing the last item while it plays advances to the new tail',
+        () async {
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'index': 2,
+        'position': 120000,
+      });
+      expect(player.currentIndex, 2);
+
+      await removeRange(2, 3, <int>[0, 1]);
+      expect(player.currentIndex, 1,
+          reason: 'the removed tail was the last item, so the new tail plays');
+      expect(player.seekPending, isTrue);
+      expect(player.positionUs, 0);
+    });
+
+    test('a surviving current item keeps its position', () async {
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'index': 1,
+        'position': 9000000,
+      });
+
+      await removeRange(0, 1, <int>[0, 1]);
+      expect(player.currentIndex, 0,
+          reason: 'the current item shifted from 1 to 0');
+      expect(player.positionUs, 9000000,
+          reason: 'a surviving item resumes at its position, not from zero');
+    });
+
+    test('a reorder that shifts the current item leaves no deferred seek armed',
+        () async {
+      // Moving another item in front of the playing one shifts the current
+      // item's index. The native engine must consume the seek it arms for
+      // that shift immediately (the same-item MoveTo fires no
+      // CurrentItemChanged), or every later same-item seek would defer onto
+      // an arm that nothing ever consumes.
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'index': 0,
+        'position': 300000,
+      });
+
+      await move(2, 0, <int>[0, 1, 2]);
+      expect(player.currentIndex, 1,
+          reason: 'the current item shifted from 0 to 1');
+      expect(player.seekPending, isFalse,
+          reason: 'a same-item shift must not leave a deferred seek armed');
+
+      // And the next plain seek still lands rather than deferring.
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'position': 700000,
+      });
+      expect(player.positionUs, 700000);
+    });
+  });
+
   group('concatenatingMove', () {
     test('moves an item forward, backward and onto itself', () async {
       await move(0, 2, <int>[1, 2, 0]);

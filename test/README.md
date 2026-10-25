@@ -2,7 +2,7 @@
 
 Three independent suites verify this package. Run all of them before a release.
 
-## 1. Dart channel-contract tests (101 tests, any OS)
+## 1. Dart channel-contract tests (107 tests, any OS)
 
 From the repository root:
 
@@ -41,9 +41,15 @@ flutter test
 Pop-Location
 ```
 
-## 2. Real Windows playback regressions (34 scenarios)
+## 2. Real Windows playback regressions (42 scenarios)
 
 Builds the example with `integration_test/native_audio_test.dart` as its entry point, runs the scenarios against the actual compiled plugin on real platform channels, and records machine-readable results.
+
+> The documented count is the number of scenarios the runner **executes** (the
+> entries in `results.json`), not the number of `scenario(` call sites in the
+> source: the loop-mode check runs one call site twice, as the `before load`
+> and `after load` variants. Count from a run's `results.json`, never from
+> grep, when verifying this number.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tool/test_windows.ps1 -Mode debug

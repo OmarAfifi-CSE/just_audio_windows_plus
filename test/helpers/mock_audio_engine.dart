@@ -527,7 +527,9 @@ class MockPlayerInstance {
     loading = leaves.isNotEmpty;
     failed = false;
     completed = false;
-    seekInProgress = true;
+    // Mirrors native Load(): ClearSeek() leaves no in-flight seek, and the
+    // initial position is armed as a deferred seek consumed by the open.
+    seekInProgress = false;
     seekPending = leaves.isNotEmpty;
     requestedIndex = index;
     positionUs = position;
@@ -606,10 +608,34 @@ class MockPlayerInstance {
     // Re-runs the size and depth validation the native side performs.
     target.size;
 
+    // The identity of the playing item before the re-flatten. Tree children
+    // keep their map instances, so an identical reference means the item
+    // survived the mutation and merely shifted.
+    final oldIndex = currentIndex;
+    final oldLeaf =
+        oldIndex >= 0 && oldIndex < leaves.length ? leaves[oldIndex] : null;
+
     leaves
       ..clear()
       ..addAll(_flattenTo(_tree));
-    if (currentIndex >= leaves.length) currentIndex = -1;
+    if (oldLeaf != null) {
+      var survived = leaves.indexOf(oldLeaf);
+      if (survived >= 0) {
+        currentIndex = survived;
+      } else if (leaves.isNotEmpty) {
+        // Mirrors the native advance-on-removal: the current item was
+        // removed, so playback moves to the item that shifted into its
+        // position and starts it from the beginning.
+        currentIndex = oldIndex < leaves.length ? oldIndex : leaves.length - 1;
+        seekPending = true;
+        positionUs = 0;
+        durationUs = durationOf(leaves[currentIndex]);
+      } else {
+        currentIndex = -1;
+      }
+    } else if (currentIndex >= leaves.length) {
+      currentIndex = -1;
+    }
     if (leaves.isEmpty) {
       completed = true;
       completePlay();
@@ -739,9 +765,11 @@ class MockAudioEngine {
         final existing = player.pendingPlay;
         final coalesced = existing != null && !existing.isCompleted;
         final myPlay = coalesced ? null : player._ensurePendingPlay();
-        if (player.completed ||
-            player.failed ||
-            (player.sourceSet && player.leaves.isEmpty)) {
+        // Settled instantly only for states this very call cannot make
+        // playable: a failed engine, or a loaded playlist that is empty. A
+        // completed engine is re-armed by the play (the media restarts), so
+        // the future stays bound to the replayed pass — as on Android.
+        if (player.failed || (player.sourceSet && player.leaves.isEmpty)) {
           player.completePlay();
         }
         player.completed = false;
@@ -778,14 +806,26 @@ class MockAudioEngine {
             position < 0) {
           _argumentError('Invalid seek index or position');
         }
+        // An idle or failed engine has nothing to seek: a tolerated no-op
+        // that must not report a position nothing will ever land on.
+        if (!player.sourceSet || player.leaves.isEmpty) {
+          player.broadcastState();
+          return <String, dynamic>{};
+        }
         player.completed = false;
         // Mirrors the native split: switching item defers the seek until the
-        // target opens, a same-item seek lands immediately.
+        // target opens, a same-item seek lands immediately. A seek that arrives
+        // while an item is still opening (pending load or deferred seek) keeps
+        // the deferred seek armed with the NEWEST position, mirroring the
+        // native else-branch that must not let Opened() clobber it with the
+        // stale load-time position.
         if (index >= 0) {
           final switchesItem = index != player.currentIndex;
           player.requestedIndex = index;
           player.currentIndex = index;
-          player.seekPending = switchesItem;
+          player.seekPending = switchesItem || player.seekPending || player.loading;
+        } else if (player.seekPending || player.loading) {
+          player.seekPending = true;
         }
         player.seekInProgress = true;
         player.positionUs = position;
@@ -864,6 +904,14 @@ class MockAudioEngine {
 
       case 'setAndroidAudioAttributes':
         // just_audio sends this during platform initialization on every OS.
+        return <String, dynamic>{};
+
+      case 'setAutomaticallyWaitsToMinimizeStalling':
+      case 'setCanUseNetworkResourcesForLiveStreamingWhilePaused':
+      case 'setPreferredPeakBitRate':
+        // AVPlayer (iOS) knobs on AudioPlayer's cross-platform API. just_audio
+        // sends them whenever the app calls the setter, so the platform must
+        // accept them; they have no Windows counterpart.
         return <String, dynamic>{};
 
       case 'dispose':

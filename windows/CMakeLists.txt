@@ -68,16 +68,19 @@ if (include_just_audio_windows_plus_tests)
     test/uri_utils_test.cpp
     test/source_model_test.cpp
     test/platform_thread_test.cpp
+    test/player_utils_test.cpp
   )
   apply_standard_settings(${TEST_RUNNER})
   # source_model.hpp includes flutter/encodable_value.h, which lives in the
   # cpp_client_wrapper include directory owned by the wrapper target, not the
-  # `flutter` target, so both INTERFACE_INCLUDE_DIRECTORIES are needed.
+  # `flutter` target, so both INTERFACE_INCLUDE_DIRECTORIES are needed. The
+  # player_utils_test additionally compiles player.hpp, whose WinRT usage is
+  # auto-linked via `#pragma comment(lib, "windowsapp")`.
   target_include_directories(${TEST_RUNNER} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "$<TARGET_PROPERTY:flutter,INTERFACE_INCLUDE_DIRECTORIES>"
     "$<TARGET_PROPERTY:flutter_wrapper_plugin,INTERFACE_INCLUDE_DIRECTORIES>")
-  target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main user32)
+  target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main user32 windowsapp)
 
   include(GoogleTest)
   gtest_discover_tests(${TEST_RUNNER} DISCOVERY_TIMEOUT 30)

@@ -381,6 +381,37 @@ void main() {
       }
     });
 
+    test('a seek landing while the item is still opening defers the newest position',
+        () async {
+      // The native engine applies a deferred seek in Opened(), when the media
+      // actually opens. A later seek that arrives before that must overwrite
+      // the deferred target and keep it armed, or the stale load-time position
+      // would clobber the user's scrub the moment the item opens.
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'index': 1,
+        'position': 500000,
+      });
+      expect(player.seekPending, isTrue);
+
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'position': 1200000,
+      });
+      expect(player.positionUs, 1200000);
+      expect(
+        player.seekPending,
+        isTrue,
+        reason: 'the deferred seek must stay armed with the newest position',
+      );
+
+      // An indexed seek back to the already-current item keeps it armed too.
+      await channel.invokeMethod<void>('seek', <String, dynamic>{
+        'index': 1,
+        'position': 2000000,
+      });
+      expect(player.positionUs, 2000000);
+      expect(player.seekPending, isTrue);
+    });
+
     test('rejects a negative position', () async {
       await expectLater(
         channel.invokeMethod<void>('seek', <String, dynamic>{'position': -1000}),
@@ -607,6 +638,19 @@ void main() {
     test('setAndroidAudioAttributes is accepted as a no-op', () async {
       await channel
           .invokeMethod<void>('setAndroidAudioAttributes', <String, dynamic>{});
+    });
+
+    test('iOS-only AVPlayer setters are accepted as no-ops', () async {
+      // These are cross-platform public API on AudioPlayer; just_audio sends
+      // them whenever the app calls the setter, so a NotImplemented answer
+      // would explode as MissingPluginException in the caller's face.
+      for (final method in <String>[
+        'setAutomaticallyWaitsToMinimizeStalling',
+        'setCanUseNetworkResourcesForLiveStreamingWhilePaused',
+        'setPreferredPeakBitRate',
+      ]) {
+        await channel.invokeMethod<void>(method, <String, dynamic>{});
+      }
     });
 
     test('audio effect methods surface as MissingPluginException', () async {

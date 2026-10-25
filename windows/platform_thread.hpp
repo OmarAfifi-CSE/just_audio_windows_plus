@@ -38,8 +38,6 @@ class PlatformThreadDispatcher {
     // This constructor runs during plugin registration, i.e. on the platform
     // thread, so the window created here belongs to that thread and its WndProc
     // is pumped by it.
-    platform_thread_id_ = GetCurrentThreadId();
-
     WNDCLASSEXW cls{};
     cls.cbSize = sizeof(cls);
     cls.lpfnWndProc = &PlatformThreadDispatcher::WndProc;
@@ -82,14 +80,6 @@ class PlatformThreadDispatcher {
   bool available() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return window_ != nullptr;
-  }
-
-  // Whether the caller is already on the platform thread, in which case there is
-  // nothing to marshal and the work should just run — that keeps the
-  // method-channel paths (seekToItem, seekToPosition) writing synchronously, as
-  // they did before, rather than being pushed a message-pump turn later.
-  bool on_platform_thread() const {
-    return GetCurrentThreadId() == platform_thread_id_;
   }
 
   bool Post(std::function<void()> task) {
@@ -147,7 +137,6 @@ class PlatformThreadDispatcher {
   }
 
   HWND window_ = nullptr;
-  DWORD platform_thread_id_ = 0;
   mutable std::mutex mutex_;
   std::vector<std::function<void()>> tasks_;
 };

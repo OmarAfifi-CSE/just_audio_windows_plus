@@ -81,7 +81,7 @@ jobs:
       # fixtures are generated PCM WAV plus a loopback HTTP server, so this
       # needs no network access and no external media.
       # In headless environments without audio sinks (e.g. cloud VMs), it gracefully reports and skips.
-      - name: Run real Windows playback suite (34 scenarios)
+      - name: Run real Windows playback suite (42 scenarios)
         timeout-minutes: 20
         run: ./tool/test_windows.ps1 -Mode debug
 

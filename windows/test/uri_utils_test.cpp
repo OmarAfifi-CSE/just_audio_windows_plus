@@ -152,23 +152,6 @@ TEST(EncodeSpacesInUri, TenThousandCharacterAlternatingStressTest) {
   EXPECT_EQ(EncodeSpacesInUri(input), expected);
 }
 
-TEST(ReorderByShuffleOrder, AppliesPermutationFromOriginalIndices) {
-  const std::vector<int> source{0, 1, 2};
-  std::vector<int> result;
-
-  ASSERT_TRUE(ReorderByShuffleOrder(source, std::vector<int64_t>{1, 2, 0}, result));
-  EXPECT_EQ(result, (std::vector<int>{1, 2, 0}));
-}
-
-TEST(ReorderByShuffleOrder, RejectsDuplicateOrOutOfRangeIndices) {
-  const std::vector<int> source{0, 1, 2};
-  std::vector<int> result{9};
-
-  EXPECT_FALSE(ReorderByShuffleOrder(source, std::vector<int64_t>{0, 0, 2}, result));
-  EXPECT_TRUE(result.empty());
-  EXPECT_FALSE(ReorderByShuffleOrder(source, std::vector<int64_t>{0, 1, 3}, result));
-}
-
 TEST(ClampBufferedPosition, KeepsPositionWithinDuration) {
   EXPECT_EQ(ClampBufferedPosition(100, -1.0), 0);
   EXPECT_EQ(ClampBufferedPosition(100, 0.5), 50);

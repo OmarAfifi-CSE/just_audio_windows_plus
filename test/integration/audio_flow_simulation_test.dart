@@ -91,10 +91,20 @@ void main() {
     expect(player.playing, isTrue,
         reason: 'the playing intent survives completion, as just_audio expects');
 
-    // Replaying from completed re-arms the lifecycle.
-    await channel.invokeMethod<void>('play', <String, dynamic>{});
-    expect(player.completed, isFalse);
+    // Replaying from completed re-arms the lifecycle, and the replay's play
+    // future stays bound to the replayed pass: it resolves when that pass
+    // reaches its own end — not the instant the replay starts.
+    final replay = channel.invokeMethod<void>('play', <String, dynamic>{});
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(player.completed, isFalse,
+        reason: 'the replay must re-arm the completion lifecycle');
     expect(player.processingState, 3);
+    expect(player.pendingPlay, isNotNull,
+        reason: 'the replay play must stay pending until the replayed EOF');
+    // The engine settles it from MediaEnded of the replayed pass.
+    player.completed = true;
+    player.completePlay();
+    await replay.timeout(const Duration(seconds: 1));
   });
 
   test('a load failure rolls the source back and reports the message',

@@ -1,5 +1,3 @@
-import 'package:flutter/foundation.dart';
-
 /// Windows implementation of `just_audio`, using WinRT MediaPlayer.
 ///
 /// Add this package alongside `just_audio` to register the native Windows
@@ -19,6 +17,5 @@ import 'package:flutter/foundation.dart';
 class JustAudioWindowsPlus {
   /// Package marker; this constant does not detect runtime codec availability
   /// or verify native plugin registration.
-  @visibleForTesting
   static const bool isSupported = true;
 }

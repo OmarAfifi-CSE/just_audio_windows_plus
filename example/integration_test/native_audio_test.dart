@@ -12,6 +12,7 @@ import 'package:just_audio/just_audio.dart';
 final _results = <Map<String, Object?>>[];
 late Directory _artifacts;
 late File _longWav;
+late File _sixWav;
 late File _shortWav;
 final _players = <AudioPlayer>[];
 
@@ -66,6 +67,14 @@ class RawPlayer {
 
   Future<dynamic> call(String name, [Map<String, Object?>? args]) =>
       channel.invokeMethod<dynamic>(name, args ?? {});
+  // The plugin broadcasts only on WinRT state changes and method calls, so
+  // a benign call is the way to force a fresh state sample.
+  Future<Map<dynamic, dynamic>> sample() async {
+    await call('setVolume', {'volume': 0.0});
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    return events.last;
+  }
+
   Future<void> dispose() async {
     await subscription?.cancel();
     await root.invokeMethod<void>('disposePlayer', {'id': id});
@@ -179,6 +188,7 @@ Future<void> main() async {
     exit(2);
   });
   _longWav = makeWav('three seconds.wav', 3000);
+  _sixWav = makeWav('six seconds.wav', 6000);
   _shortWav = makeWav('short.wav', 400);
   await scenario('load returns known duration', () async {
     final p = await newPlayer();
@@ -236,11 +246,10 @@ Future<void> main() async {
       require(p.processingState != ProcessingState.completed,
           'pass $pass: seek kept the completed state');
     }
-    // Bare play() straight from the completed engine (no seek first): the
-    // contract path that used to wedge. pause() first so the Dart play intent
-    // is cleared and the call actually reaches the platform, then play
-    // WITHOUT any seek — exactly the app's toggle-from-completed path. Must
-    // transition completed -> ready, restart audio, and re-arm completion.
+    // Bare play() straight from the completed engine (no seek first), the
+    // app's toggle-from-completed path. Under the corrected contract the
+    // Play() restarts the ended list and the play future stays bound to the
+    // replayed pass, resolving at its EOF.
     await p.play().timeout(const Duration(seconds: 6));
     require(p.processingState == ProcessingState.completed,
         'warm-up play did not reach EOF');
@@ -248,13 +257,16 @@ Future<void> main() async {
     require(!p.playing, 'pause did not clear playing intent');
     require(p.processingState == ProcessingState.completed,
         'pause should not erase the completed state');
+    // The corrected contract: a play issued while completed re-arms the
+    // engine and the future stays bound to the replayed pass — `await
+    // player.play()` resolves when that pass reaches EOF, exactly as on
+    // Android. It must NOT resolve the instant the replay starts.
+    final completionsBeforeBarePlay = completions.length;
     await p.play().timeout(const Duration(seconds: 6));
-    await eventually(
-        () => p.processingState == ProcessingState.ready,
-        'bare play after EOF never left the completed state');
-    await eventually(
-        () => p.processingState == ProcessingState.completed,
-        're-armed completion did not fire at the next EOF');
+    require(p.processingState == ProcessingState.completed,
+        'bare play after EOF did not replay to completion');
+    require(completions.length > completionsBeforeBarePlay,
+        'the replayed pass delivered no fresh completed event');
     require(completions.length >= 7,
         'each restart pass must deliver a fresh completed event, got ${completions.length}');
     await sub.cancel();
@@ -345,6 +357,197 @@ Future<void> main() async {
     await eventually(() => p.currentIndex == 0, 'seek back failed');
     await eventually(() => (p.position.inMilliseconds - 200).abs() < 250,
         'position lost seeking back to open item: ${p.position}');
+  });
+  await scenario(
+      'a seek back to a kept-open item lands physically and stays', () async {
+    // The keep-open window never re-fires MediaOpened for an already-open
+    // target, so a seek that defers to it would only be *reported* (the
+    // fake position) for its 2s window and then silently revert. This pins
+    // the physical application: a paused player asked to seek back to an
+    // open item at 2s must still report exactly 2s after the deadline.
+    final p = RawPlayer('seek-open-paused');
+    await p.init();
+    try {
+      await p.call('load', {
+        'audioSource': playlist(
+            'root', [leaf('a', _longWav.uri), leaf('b', _longWav.uri)], [0, 1]),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      unawaited(p.call('play'));
+      var playing = await p.sample();
+      while ((playing['updatePosition'] as int? ?? 0) < 150000) {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        playing = await p.sample();
+      }
+      await p.call('pause');
+      await p.call('seek', {'index': 1, 'position': 1000000});
+      var settled = await p.sample();
+      require(settled['currentIndex'] == 1,
+          'paused cross-item seek never switched item: $settled');
+      await p.call('seek', {'index': 0, 'position': 2000000});
+      settled = await p.sample();
+      require(settled['currentIndex'] == 0, 'seek-back item wrong: $settled');
+      // Past the 2s fake-position deadline: the truth must still be 2s.
+      await Future<void>.delayed(const Duration(milliseconds: 2600));
+      final after = await p.sample();
+      require((after['updatePosition'] as int? ?? -1) == 2000000,
+          'position regressed to ${after['updatePosition']}us after the '
+          'deadline - the physical seek did not stick: $after');
+    } finally {
+      await p.dispose();
+    }
+  });
+  await scenario('a rapid cross-item scrub resumes from the final target',
+      () async {
+    // Back-to-back seeks across items are what a user dragging a scrub bar
+    // produces. The last requested (index, position) must be the one that
+    // lands, and playback must continue from it rather than stalling.
+    final p = RawPlayer('scrub-rapid');
+    await p.init();
+    try {
+      await p.call('load', {
+        'audioSource': playlist('root', [
+          leaf('a', _sixWav.uri),
+          leaf('b', _sixWav.uri),
+          leaf('c', _sixWav.uri),
+        ], [0, 1, 2]),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      unawaited(p.call('play'));
+      var playing = await p.sample();
+      while ((playing['updatePosition'] as int? ?? 0) < 50000) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        playing = await p.sample();
+      }
+      await p.call('seek', {'index': 1, 'position': 500000});
+      await p.call('seek', {'index': 2, 'position': 1500000});
+      await p.call('seek', {'index': 0, 'position': 200000});
+      await p.call('seek', {'index': 2, 'position': 4000000});
+      var settled = await p.sample();
+      final watch = Stopwatch()..start();
+      while ((settled['updatePosition'] as int? ?? 0) < 4300000) {
+        require(watch.elapsed < const Duration(seconds: 6),
+            'scrub never settled on item 2 @ >=4.3s: $settled');
+        require(settled['currentIndex'] == 2,
+            'scrub left the final target item: $settled');
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        settled = await p.sample();
+      }
+      // It must keep progressing from 4s, not restart or stall.
+      final previous = settled;
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final after = await p.sample();
+      require((after['updatePosition'] as int) >
+          (previous['updatePosition'] as int) + 100000,
+          'playback did not continue after the scrub: $previous -> $after');
+    } finally {
+      await p.dispose();
+    }
+  });
+  await scenario('a seek still lands after reordering shifted the current item',
+      () async {
+    // Moving a different item in front of the playing one shifts the current
+    // item's index. MoveTo targets the same item object, which does not fire
+    // CurrentItemChanged — so a seek deferred onto that arm would wait for an
+    // event that never comes. This pins that the arm is consumed and a
+    // subsequent same-item seek still lands physically.
+    final p = RawPlayer('seek-after-reorder');
+    await p.init();
+    try {
+      await p.call('load', {
+        'audioSource': playlist('root', [
+          leaf('a', _sixWav.uri),
+          leaf('b', _sixWav.uri),
+          leaf('c', _sixWav.uri),
+        ], [0, 1, 2]),
+        'initialIndex': 2,
+        'initialPosition': 0,
+      });
+      unawaited(p.call('play'));
+      var playing = await p.sample();
+      while ((playing['updatePosition'] as int? ?? 0) < 100000) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        playing = await p.sample();
+      }
+      require(playing['currentIndex'] == 2,
+          'item 2 never became current: $playing');
+      // Move item 1 (b) to index 2: the order becomes a, c, b, so the
+      // current item c shifts from index 2 to index 1 without changing
+      // item objects — exactly the same-item MoveTo path being pinned.
+      await p.call('concatenatingMove', {
+        'id': 'root',
+        'currentIndex': 1,
+        'newIndex': 2,
+        'shuffleOrder': [0, 1, 2],
+      });
+      var settled = await p.sample();
+      require(settled['currentIndex'] == 1,
+          'reorder did not shift the current item to 1: $settled');
+      // Now a plain unindexed seek must land and stick. The 6s track leaves
+      // room for the 2.2s wait past the fake-position deadline.
+      await p.call('seek', {'position': 1500000});
+      settled = await p.sample();
+      require((settled['updatePosition'] as int? ?? -1) == 1500000,
+          'seek after reorder did not land: $settled');
+      await Future<void>.delayed(const Duration(milliseconds: 2200));
+      final after = await p.sample();
+      final position = after['updatePosition'] as int? ?? -1;
+      require(position >= 1500000 && position <= 4000000,
+          'position ${position}us regressed or stalled after the '
+          'post-reorder seek: $after');
+    } finally {
+      await p.dispose();
+    }
+  });
+  await scenario('removing the playing item advances playback', () async {
+    // just_audio on Android advances to the item that shifts into the
+    // removed item's position. Without that, the list reports no current
+    // item, every broadcast carries a null duration, and playback wedges.
+    final p = RawPlayer('remove-current');
+    await p.init();
+    try {
+      await p.call('load', {
+        'audioSource': playlist('root', [
+          leaf('a', _longWav.uri),
+          leaf('b', _longWav.uri),
+          leaf('c', _longWav.uri),
+        ], [0, 1, 2]),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      unawaited(p.call('play'));
+      var playing = await p.sample();
+      require(playing['currentIndex'] == 0, 'item 0 not current: $playing');
+      while ((playing['updatePosition'] as int? ?? 0) < 100000) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        playing = await p.sample();
+      }
+      await p.call('concatenatingRemoveRange', {
+        'id': 'root',
+        'startIndex': 0,
+        'endIndex': 1,
+        'shuffleOrder': [0, 1],
+      });
+      var advanced = false;
+      Map<dynamic, dynamic>? lastSample;
+      final watch = Stopwatch()..start();
+      while (watch.elapsed < const Duration(seconds: 4)) {
+        final sample = await p.sample();
+        lastSample = sample;
+        final position = sample['updatePosition'] as int? ?? 0;
+        if ((sample['processingState'] as int) == 4 || position > 150000) {
+          advanced = true;
+          break;
+        }
+      }
+      require(advanced,
+          'playback wedged after removing the current item: $lastSample');
+      await p.call('pause');
+    } finally {
+      await p.dispose();
+    }
   });
   await scenario('insert into empty playlist attaches source and plays',
       () async {
@@ -452,6 +655,49 @@ Future<void> main() async {
         require(buffered <= duration,
             'bufferedPosition $buffered exceeds duration $duration');
         require(buffered >= 0, 'bufferedPosition $buffered is negative');
+      }
+    } finally {
+      await p.dispose();
+    }
+  });
+  await scenario('a play after a failed load cannot resurrect the old source',
+      () async {
+    // A replacement load whose item cannot even construct (a relative URI
+    // that WinRT rejects) fails while the OLD source is still attached.
+    // Fail() must detach it: a play() pressed on the failed engine must not
+    // bring the old track back while Dart believes the player is idle.
+    final p = RawPlayer('failed-resurrection');
+    await p.init();
+    try {
+      await p.call('load', {
+        'audioSource': leaf('a', _longWav.uri),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      unawaited(p.call('play').then((_){}, onError: (_){}));
+      var playing = await p.sample();
+      while ((playing['updatePosition'] as int? ?? 0) < 120000) {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        playing = await p.sample();
+      }
+      final failure = await caught(p.call('load', {
+        'audioSource': leaf('bad', Uri.parse('not-an-absolute-uri')),
+      }));
+      require(failure is PlatformException,
+          'malformed replacement load did not fail: $failure');
+      require(
+          p.events.any((e) => e['errorCode'] == 1),
+          'engine did not report the failure in-band: ${p.events.last}');
+      // Dart presses play on the failed engine: the request settles, but no
+      // audio may return. The position must stay frozen across the probes.
+      unawaited(p.call('play').then((_){}, onError: (_){}));
+      final frozen = await p.sample();
+      final frozenPosition = frozen['updatePosition'] as int;
+      for (var i = 0; i < 3; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        final after = await p.sample();
+        require((after['updatePosition'] as int) == frozenPosition,
+            'audio resurrected after a failed load: $frozen -> $after');
       }
     } finally {
       await p.dispose();
@@ -902,6 +1148,138 @@ Future<void> main() async {
       }
     } finally {
       await server.close(force: true);
+    }
+  });
+  await scenario('a raw seek issued while the load is pending lands when it opens',
+      () async {
+    // just_audio's Dart side drops a seek() while ProcessingState.loading, so
+    // this exercises the channel contract directly through RawPlayer: a seek
+    // that reaches the engine while the media is still opening must overwrite
+    // the load's deferred initial position, not be clobbered by it when
+    // MediaOpened lands.
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      final bytes = _longWav.readAsBytesSync();
+      request.response.headers.contentType = ContentType('audio', 'wav');
+      request.response.contentLength = bytes.length;
+      request.response.add(bytes);
+      await request.response.close();
+    });
+    RawPlayer? p;
+    try {
+      p = RawPlayer('seek-during-load');
+      await p.init();
+      final player = p;
+      final loading = player.call('load', {
+        'audioSource': leaf('a', Uri.parse('http://127.0.0.1:${server.port}/audio.wav')),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      await player.call('seek', {'position': 1000000}).timeout(const Duration(seconds: 2));
+      await loading.timeout(const Duration(seconds: 5));
+      await eventually(
+          () => player.events.any((e) => e['updatePosition'] == 1000000),
+          'no event ever reported the seeked position: '
+          '${player.events.map((e) => e['updatePosition']).toList()}');
+      // The position must survive the SeekCompleted handback: the truthful
+      // session position after the seek settles is still the seeked one, not
+      // the load's initial zero.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      require(player.events.last['updatePosition'] == 1000000,
+          'position snapped back after the seek: ${player.events.last}');
+    } finally {
+      await p?.dispose();
+      await server.close(force: true);
+    }
+  });
+  await scenario('the requested initial position is reported while loading',
+      () async {
+    // The engine defers the initial position to the open, but the loading
+    // broadcasts must report the requested position rather than a transient
+    // 0 - otherwise a seek bar visibly jumps from 0 when the item opens.
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      final bytes = _longWav.readAsBytesSync();
+      request.response.headers.contentType = ContentType('audio', 'wav');
+      request.response.contentLength = bytes.length;
+      request.response.add(bytes);
+      await request.response.close();
+    });
+    final p = RawPlayer('initial-position-loading');
+    try {
+      await p.init();
+      final loading = p.call('load', {
+        'audioSource':
+            leaf('a', Uri.parse('http://127.0.0.1:${server.port}/audio.wav')),
+        'initialIndex': 0,
+        'initialPosition': 1200000,
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      final duringLoad = p.events
+          .where((e) => e['processingState'] == 1)
+          .map((e) => e['updatePosition'])
+          .toList();
+      await loading.timeout(const Duration(seconds: 5));
+      require(duringLoad.isNotEmpty, 'no loading-state events observed');
+      require(duringLoad.every((pos) => pos == 1200000),
+          'loading events reported $duringLoad, expected all 1200000');
+    } finally {
+      await p.dispose();
+      await server.close(force: true);
+    }
+  });
+  await scenario('rapid pause play seek toggling never fights the user intent',
+      () async {
+    // The engine re-asserts Play() when Dart's playing intent contradicts a
+    // paused session (the swallowed-play self-heal). This storm pins that the
+    // heal is strictly one-directional: after a real pause the clock must
+    // stop, and after a real play it must run — through eight full
+    // pause/seek/play cycles on the real pipeline.
+    final p = RawPlayer('toggle-storm');
+    await p.init();
+    try {
+      await p.call('load', {
+        'audioSource': playlist('root', [leaf('a', _sixWav.uri)], [0]),
+        'initialIndex': 0,
+        'initialPosition': 0,
+      });
+      unawaited(p.call('play').then((_){}, onError: (_){}));
+      var s = await p.sample();
+      final warm = Stopwatch()..start();
+      while ((s['updatePosition'] as int? ?? 0) < 100000) {
+        require(warm.elapsed < const Duration(seconds: 5), 'never started: $s');
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        s = await p.sample();
+      }
+      for (var i = 0; i < 8; i++) {
+        // Pause, let the pipeline settle, then prove the clock is stopped:
+        // two samples 250ms apart must not advance meaningfully.
+        await p.call('pause');
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        final a = await p.sample();
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        final b = await p.sample();
+        require(
+            (b['updatePosition'] as int) - (a['updatePosition'] as int) <
+                150000,
+            'toggle $i: the clock kept advancing ~550ms after pause: '
+            '$a -> $b');
+        // Seek while paused, then play, and prove the clock runs again.
+        await p.call('seek', {'position': 500000 + i * 250000});
+        unawaited(p.call('play').then((_){}, onError: (_){}));
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        final c = await p.sample();
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        final d = await p.sample();
+        require((d['updatePosition'] as int) - (c['updatePosition'] as int) >
+            100000,
+            'toggle $i: playback did not resume after play: $c -> $d');
+      }
+      await p.call('pause');
+    } finally {
+      await p.dispose();
     }
   });
   await scenario('rapid create load seek dispose with callbacks in flight',

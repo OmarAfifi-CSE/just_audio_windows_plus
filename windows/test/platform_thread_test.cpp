@@ -19,18 +19,16 @@ void PumpMessages() {
 TEST(PlatformThreadDispatcher, WorkerPostsExecuteOnlyWhenPlatformPumpsMessages) {
   PlatformThreadDispatcher dispatcher;
   ASSERT_TRUE(dispatcher.available());
-  ASSERT_TRUE(dispatcher.on_platform_thread());
   const DWORD platform = GetCurrentThreadId();
   DWORD callback_thread = 0;
   bool posted = false;
-  bool worker_is_platform = true;
   std::thread worker([&] {
-    worker_is_platform = dispatcher.on_platform_thread();
     posted = dispatcher.Post([&] { callback_thread = GetCurrentThreadId(); });
   });
   worker.join();
-  EXPECT_FALSE(worker_is_platform);
-  ASSERT_TRUE(posted);
+  EXPECT_TRUE(posted);
+  // The task cannot have run on the worker thread: only the message pump
+  // below executes it, on the platform thread that owns the window.
   EXPECT_EQ(callback_thread, 0u);
   PumpMessages();
   EXPECT_EQ(callback_thread, platform);

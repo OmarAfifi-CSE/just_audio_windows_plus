@@ -7,7 +7,7 @@
 [![pub package](https://img.shields.io/pub/v/just_audio_windows_plus.svg?color=blue&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus)
 [![pub points](https://img.shields.io/pub/points/just_audio_windows_plus?color=2E8B57&label=pub%20points&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus/score)
 [![CI Quality Gate](https://img.shields.io/github/actions/workflow/status/OmarAfifi-CSE/just_audio_windows_plus/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/OmarAfifi-CSE/just_audio_windows_plus/actions/workflows/ci.yml)
-[![Tests: 174 Passing](https://img.shields.io/badge/Tests-174%20Passing-brightgreen?style=flat-square)](test/README.md)
+[![Tests: 189 Passing](https://img.shields.io/badge/Tests-189%20Passing-brightgreen?style=flat-square)](test/README.md)
 
 [![Standard: C++20](https://img.shields.io/badge/Standard-C%2B%2B20-blueviolet?style=flat-square)](https://en.cppreference.com/w/cpp/20)
 [![Platform: Windows 10 | 11](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D7?style=flat-square)](https://flutter.dev)
@@ -49,7 +49,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 - 🛡️ **Bulletproof Lifecycle & Disposal**: Native callbacks utilize `std::weak_ptr` with atomic generation tracking. Disposing of a player mid-playback, fast page switching, or triggering hot restart never causes native crashes.
 - 🎯 **Strict `just_audio` Contract Compliance**: `await player.setFilePath(...)` resolves with the exact microsecond duration or throws a catchable `PlayerException` on missing files / 404s (no infinite hangs). `await player.play()` stays active until pause or completion.
 - 🔀 **True Playlist & Shuffle Architecture**: Native recursive source tree supports nested concatenating, looping, and clipping sources with linear, permutation-validated shuffling and dynamic mutations (even starting from an empty playlist).
-- 🧪 **174 Automated Verification Tests**: **34 real Windows end-to-end playback integration scenarios** run against the compiled plugin (Debug and Release), **40 native C++ unit tests** exercising the production headers, and **100 Dart contract tests** that pin the exact channel protocol, argument shapes, and error codes the native engine implements.
+- 🧪 **189 Automated Verification Tests**: **42 real Windows end-to-end playback integration scenarios** run against the compiled plugin (Debug and Release), **40 native C++ unit tests** exercising the production headers, and **107 Dart contract tests** that pin the exact channel protocol, argument shapes, and error codes the native engine implements.
 
 ---
 
@@ -57,7 +57,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 
 See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 
-| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.5) |
+| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.6) |
 |---|:---:|:---:|
 | **Platform Thread Marshalling** | ❌ Background Threadpool (Engine logs non-platform thread warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`) serialization** |
 | **C++ Toolchain Standard** | ❌ C++17 (Breaks on modern MSVC 14.51 / VS 2026 `STL1011`) | ✅ **Modern C++20 Core (Clean `/W4 /WX` on VS 2026)** |
@@ -72,7 +72,7 @@ See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 | **Native Error Text Integrity** | ❌ Temporary `c_str()` dangling pointer (`FormatException`) | ✅ **Owned `ArgumentError` strings preserve UTF-8 text** |
 | **System Media Transport Controls** | ❌ Automatically hijacks OS lockscreen with blank overlays | ✅ **De-conflicted SMTC (Integrate cleanly with `audio_service`)** |
 | **Multi-Engine Isolation** | ❌ Namespace globals share state across Flutter engines | ✅ **Instance-scoped players and dispatchers** |
-| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **34 Real Playback Scenarios + 40 C++ Tests + 100 Contract Tests** |
+| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **41 Real Playback Scenarios + 40 C++ Tests + 107 Contract Tests** |
 | **Restart from Completed State** | ❌ Engine parks in `completed` after EOF; replaying the same source stays silent until a fresh source load | ✅ **`completed → ready` re-arm + commit-on-success delivery + transactional mutation rollback** |
 
 ---
@@ -88,7 +88,7 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.10.6
-  just_audio_windows_plus: ^0.5.5
+  just_audio_windows_plus: ^0.5.6
 ```
 
 > [!TIP]
@@ -315,10 +315,10 @@ Developing desktop audio means interfacing with COM and WinRT media notification
    WinRT fires media notifications on background ThreadPool threads. Writing directly to Flutter's binary messenger from background threads violates Flutter's threading model and causes dropped events. Every native callback is therefore marshalled through an `HWND_MESSAGE` Win32 message window, so the event sink is only ever touched on the platform thread. Callbacks are also guarded by a weak owner handle and a generation token, so any that arrive after a disposal, an engine restart, or a source swap are dropped instead of touching freed state.
 
 2. **Weak Ownership & Generation Tokens (`player.hpp`)**:
-   `AudioPlayer` extends `std::enable_shared_from_this<AudioPlayer>`. Native callbacks capture a `std::weak_ptr<AudioPlayer>` paired with a `generation_` counter captured at subscription time. `generation_` is deliberately **not** atomic: it is only ever read and written on the platform thread, because the dispatch above already serializes every path that touches player state. A callback whose captured generation no longer matches is discarded. If a player is disposed while WinRT callbacks are in flight, they expire harmlessly.
+   `AudioPlayer` extends `std::enable_shared_from_this<AudioPlayer>`. Native callbacks capture a `std::weak_ptr<AudioPlayer>` paired with a `generation_` counter captured at subscription time. `generation_` is atomic, because the self-healing recovery entry point captures it from WinRT thread-pool threads before posting; every read/write that touches player state is still serialized on the platform thread by the dispatch above. A callback whose captured generation no longer matches is discarded. If a player is disposed while WinRT callbacks are in flight, they expire harmlessly.
 
 3. **Permutation-Validated Playlist Shuffling (`source_model.hpp`)**:
-   Every `concatenating` node must carry a `shuffleOrder` that is an exact mathematical permutation of its children: the length must match, and `SourceNode::Permutation` rejects duplicates and out-of-range indices before any state changes. `SourceNode::Order` then walks the tree once to produce the linear automatic-progression order that `ApplyShuffle()` hands to `MediaPlaybackList::SetShuffledItems`, so an invalid order can never corrupt the playlist. `native_utils.hpp` also carries `ReorderByShuffleOrder`, a standalone validated-permutation helper for callers that hold a plain index list.
+   Every `concatenating` node must carry a `shuffleOrder` that is an exact mathematical permutation of its children: the length must match, and `SourceNode::Permutation` rejects duplicates and out-of-range indices before any state changes. `SourceNode::Order` then walks the tree once to produce the linear automatic-progression order that `ApplyShuffle()` hands to `MediaPlaybackList::SetShuffledItems`, so an invalid order can never corrupt the playlist.
 
    `ApplyShuffle()` runs only while shuffling is enabled. `SetShuffledItems` defines the progression order regardless of `ShuffleEnabled`, and `just_audio` sends a permuted `shuffleOrder` with every load even when shuffling is off, so applying it unconditionally would play every playlist of three or more tracks out of order.
 
@@ -338,13 +338,13 @@ Developing desktop audio means interfacing with COM and WinRT media notification
 Every capability in this package is proven by automated tests. We believe in **evidence over assertions**:
 
 ```powershell
-# 1. Run the Dart channel-contract suite (100 tests)
+# 1. Run the Dart channel-contract suite (107 tests)
 flutter test
 
 # 2. Run native C++ source tree and dispatcher unit tests (40 tests)
 powershell -ExecutionPolicy Bypass tool/test_native.ps1
 
-# 3. Run the real Windows playback regression suite (34 scenarios)
+# 3. Run the real Windows playback regression suite (42 scenarios)
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode debug
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode release
 ```

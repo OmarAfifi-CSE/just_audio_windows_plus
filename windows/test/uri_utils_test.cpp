@@ -152,6 +152,53 @@ TEST(EncodeSpacesInUri, TenThousandCharacterAlternatingStressTest) {
   EXPECT_EQ(EncodeSpacesInUri(input), expected);
 }
 
+// ── DecodePercentEscapes ─────────────────────────────────────────────────────
+
+// A URI with no escapes passes through unchanged.
+TEST(DecodePercentEscapes, PlainUri_Unchanged) {
+  EXPECT_EQ(DecodePercentEscapes("file:///C:/Users/audio.mp3"),
+            "file:///C:/Users/audio.mp3");
+}
+
+// Dart's Uri.file() percent-encodes non-ASCII characters as UTF-8; decoding
+// restores the characters WinRT can open.
+TEST(DecodePercentEscapes, Utf8Sequence_Decoded) {
+  EXPECT_EQ(
+      DecodePercentEscapes(
+          "file:///C:/%C4%90%E1%BB%8Dc%20di%E1%BB%85n%20c%E1%BA%A3m/0.wav"),
+      "file:///C:/Đọc diễn cảm/0.wav");
+}
+
+// A literal '%' that is not a valid escape must survive unchanged.
+TEST(DecodePercentEscapes, InvalidEscape_KeptLiterally) {
+  EXPECT_EQ(DecodePercentEscapes("100% sure"), "100% sure");
+  EXPECT_EQ(DecodePercentEscapes("trailing%2"), "trailing%2");
+  EXPECT_EQ(DecodePercentEscapes("bad%zzescape"), "bad%zzescape");
+}
+
+// ── EscapeUriPath ────────────────────────────────────────────────────────────
+
+// Non-ASCII characters stay literal: Uri encodes them, and decoding them first
+// is what makes the path resolvable.
+TEST(EscapeUriPath, NonAsciiStaysLiteral) {
+  EXPECT_EQ(EscapeUriPath("file:///C:/Đọc diễn cảm/0.wav"),
+            "file:///C:/Đọc%20diễn%20cảm/0.wav");
+}
+
+// Reserved characters that must never appear literally in a Uri.
+TEST(EscapeUriPath, ReservedCharacters_Escaped) {
+  EXPECT_EQ(EscapeUriPath("100% #1?"), "100%25%20%231%3F");
+}
+
+// The two helpers together turn Dart's encoded Uri back into one Uri accepts
+// without losing the characters MediaPlayer needs.
+TEST(EscapeUriPath, DecodedDartUri_RoundTrips) {
+  EXPECT_EQ(
+      EscapeUriPath(DecodePercentEscapes(
+          "file:///C:/%C4%90%E1%BB%8Dc%20di%E1%BB%85n%20c%E1%BA%A3m/0.wav")),
+      "file:///C:/Đọc%20diễn%20cảm/0.wav");
+}
+
 TEST(ClampBufferedPosition, KeepsPositionWithinDuration) {
   EXPECT_EQ(ClampBufferedPosition(100, -1.0), 0);
   EXPECT_EQ(ClampBufferedPosition(100, 0.5), 50);

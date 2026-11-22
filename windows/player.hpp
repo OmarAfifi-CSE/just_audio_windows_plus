@@ -89,6 +89,21 @@ inline std::wstring TO_WIDESTRING(const std::string& string) {
   return utf16_string;
 }
 
+// Local files are decoded and re-escaped before they reach Uri: Dart's
+// Uri.file() percent-encodes non-ASCII characters as UTF-8, and WinRT cannot
+// resolve such a path (MediaPlayer reports "The system cannot find the path
+// specified"). Letting Uri encode the literal characters itself keeps paths
+// with accented or non-Latin directory names playable.
+inline MediaSource CreateSourceMedia(const std::string& uri) {
+  constexpr char kFilePrefix[] = "file:///";
+  constexpr size_t kFilePrefixLength = sizeof(kFilePrefix) - 1;
+  if (uri.compare(0, kFilePrefixLength, kFilePrefix) == 0) {
+    return MediaSource::CreateFromUri(
+        Uri(TO_WIDESTRING(EscapeUriPath(DecodePercentEscapes(uri)))));
+  }
+  return MediaSource::CreateFromUri(Uri(TO_WIDESTRING(EncodeSpacesInUri(uri))));
+}
+
 class JustAudioEventSink {
 public:
   JustAudioEventSink(JustAudioEventSink const&) = delete;
@@ -624,7 +639,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   Playback::MediaPlaybackItem CreateItem(const EncodableMap& source) {
     const auto& type = jaw::Require<std::string>(source, "type");
     const auto& uriSource = type == "clipping" ? jaw::Require<EncodableMap>(source, "child") : source;
-    auto media = MediaSource::CreateFromUri(Uri(TO_WIDESTRING(EncodeSpacesInUri(jaw::Require<std::string>(uriSource, "uri")))));
+    auto media = CreateSourceMedia(jaw::Require<std::string>(uriSource, "uri"));
     if (type != "clipping") return Playback::MediaPlaybackItem(media);
     auto start = jaw::OptionalInteger(source, "start");
     auto end = jaw::OptionalInteger(source, "end", -1);

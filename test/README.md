@@ -2,7 +2,7 @@
 
 Three independent suites verify this package. Run all of them before a release.
 
-## 1. Dart channel-contract tests (107 tests, any OS)
+## 1. Dart channel-contract tests (109 tests, any OS)
 
 From the repository root:
 
@@ -41,7 +41,7 @@ flutter test
 Pop-Location
 ```
 
-## 2. Real Windows playback regressions (42 scenarios)
+## 2. Real Windows playback regressions (52 scenarios)
 
 Builds the example with `integration_test/native_audio_test.dart` as its entry point, runs the scenarios against the actual compiled plugin on real platform channels, and records machine-readable results.
 
@@ -60,7 +60,7 @@ The fixture is generated silent PCM WAV audio plus a loopback HTTP server, avoid
 
 A successful build alone is not a passing playback run. Inspect the runner exit status and its `results.json`; timeouts or missing results are failures. **Run both Debug and Release whenever you touch native event delivery, error handling, or lifecycle code.** Compiler configuration genuinely changes behaviour here: a defect that made a Release build resolve `await player.play()` without starting the media was invisible in Debug, because the slower build let the first event-channel snapshot reach Dart before the play request was dispatched. Re-run Release more than once when the change is in delivery timing; `tool/test_windows.ps1 -SkipBuild` makes a repeat run cheap.
 
-## 3. Native C++ helper tests (40 tests)
+## 3. Native C++ helper tests (54 tests)
 
 Exercises the production source-tree parser, URI encoding, and the real Win32 dispatcher through a message pump. These include `source_model.hpp` itself, so they are the fastest way to check a parsing or bounds change.
 
@@ -72,6 +72,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tool/test_native.ps1
 
 ## Scope of evidence
 
-The playback suite targets loading success/failure, duration, play completion semantics, playing intent, playlist sequencing, shuffle-on and shuffle-off ordering, mode changes during playback, and lifecycle regressions using local files. Helper tests cover pure conversion, validation, source-tree logic, and the dispatcher's containment of a throwing task. Consult the test source for the exact assertions in a given revision.
+The playback suite targets loading success/failure, duration, play completion semantics, playing intent, playlist sequencing, shuffle-on and shuffle-off ordering, mode changes during playback, proxy HTTP headers/userAgent, non-ASCII and reserved-character local paths, multi-clip/open-ended clipping sources, speed persistence across item switches, `clearAudioSources()` teardown/reload, structured WinRT failure diagnostics, and lifecycle regressions using local files. Helper tests cover URI normalization/loopback checks, duration/diagnostic formatting, teardown messenger guards, source-tree logic, and the dispatcher's containment of a throwing task. Consult the test source for the exact assertions in a given revision.
 
 These checks do not establish universal codec support, sample-accurate or gapless playback, network/adaptive-stream compatibility, independent Flutter-engine isolation, leak freedom, or UI frame-rate performance. Disposal stress can detect observed failures but does not replace a memory diagnostic tool. Exercise the network sources, deployment environment, and concurrent-engine configurations your application actually uses.

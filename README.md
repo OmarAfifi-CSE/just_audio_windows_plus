@@ -7,7 +7,7 @@
 [![pub package](https://img.shields.io/pub/v/just_audio_windows_plus.svg?color=blue&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus)
 [![pub points](https://img.shields.io/pub/points/just_audio_windows_plus?color=2E8B57&label=pub%20points&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus/score)
 [![CI Quality Gate](https://img.shields.io/github/actions/workflow/status/OmarAfifi-CSE/just_audio_windows_plus/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/OmarAfifi-CSE/just_audio_windows_plus/actions/workflows/ci.yml)
-[![Tests: 189 Passing](https://img.shields.io/badge/Tests-189%20Passing-brightgreen?style=flat-square)](test/README.md)
+[![Tests: 215 Passing](https://img.shields.io/badge/Tests-215%20Passing-brightgreen?style=flat-square)](test/README.md)
 
 [![Standard: C++20](https://img.shields.io/badge/Standard-C%2B%2B20-blueviolet?style=flat-square)](https://en.cppreference.com/w/cpp/20)
 [![Platform: Windows 10 | 11](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D7?style=flat-square)](https://flutter.dev)
@@ -49,7 +49,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 - 🛡️ **Bulletproof Lifecycle & Disposal**: Native callbacks utilize `std::weak_ptr` with atomic generation tracking. Disposing of a player mid-playback, fast page switching, or triggering hot restart never causes native crashes.
 - 🎯 **Strict `just_audio` Contract Compliance**: `await player.setFilePath(...)` resolves with the exact microsecond duration or throws a catchable `PlayerException` on missing files / 404s (no infinite hangs). `await player.play()` stays active until pause or completion.
 - 🔀 **True Playlist & Shuffle Architecture**: Native recursive source tree supports nested concatenating, looping, and clipping sources with linear, permutation-validated shuffling and dynamic mutations (even starting from an empty playlist).
-- 🧪 **189 Automated Verification Tests**: **42 real Windows end-to-end playback integration scenarios** run against the compiled plugin (Debug and Release), **40 native C++ unit tests** exercising the production headers, and **107 Dart contract tests** that pin the exact channel protocol, argument shapes, and error codes the native engine implements.
+- 🧪 **215 Automated Verification Tests**: **52 real Windows end-to-end playback integration scenarios** run against the compiled plugin (Debug and Release), **54 native C++ unit tests** exercising the production headers, and **109 Dart contract tests** that pin the exact channel protocol, argument shapes, and error codes the native engine implements.
 
 ---
 
@@ -72,7 +72,7 @@ See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 | **Native Error Text Integrity** | ❌ Temporary `c_str()` dangling pointer (`FormatException`) | ✅ **Owned `ArgumentError` strings preserve UTF-8 text** |
 | **System Media Transport Controls** | ❌ Automatically hijacks OS lockscreen with blank overlays | ✅ **De-conflicted SMTC (Integrate cleanly with `audio_service`)** |
 | **Multi-Engine Isolation** | ❌ Namespace globals share state across Flutter engines | ✅ **Instance-scoped players and dispatchers** |
-| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **41 Real Playback Scenarios + 40 C++ Tests + 107 Contract Tests** |
+| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **52 Real Playback Scenarios + 54 C++ Tests + 109 Contract Tests** |
 | **Restart from Completed State** | ❌ Engine parks in `completed` after EOF; replaying the same source stays silent until a fresh source load | ✅ **`completed → ready` re-arm + commit-on-success delivery + transactional mutation rollback** |
 
 ---
@@ -97,7 +97,7 @@ dependencies:
 ### 2. Basic Playback Example
 
 ```dart
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:just_audio/just_audio.dart';
 
 void main() async {
@@ -123,7 +123,7 @@ void main() async {
 Here is a full, production-ready desktop audio bar widget featuring an interactive seek slider, real-time position/duration timestamps (`01:23 / 03:45`), buffering spinner, and play/pause controls:
 
 ```dart
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart'; // Or package:flutter/material.dart on Flutter < 3.47
 import 'package:just_audio/just_audio.dart';
 
 /// A production-ready desktop audio player bar widget.
@@ -252,14 +252,12 @@ await player.setAsset('assets/audio/notification.mp3');
 
 ```dart
 // Build a playlist
-final playlist = ConcatenatingAudioSource(children: [
+await player.setAudioSources([
   AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/001.mp3')),
   AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/112.mp3')),
   AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/113.mp3')),
   AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/114.mp3')),
-]);
-
-await player.setAudioSource(playlist, initialIndex: 0);
+], initialIndex: 0);
 
 // Loop modes: LoopMode.off, LoopMode.one (repeat track), LoopMode.all (repeat playlist)
 await player.setLoopMode(LoopMode.all);
@@ -272,7 +270,9 @@ await player.seekToNext();
 await player.seekToPrevious();
 
 // Dynamic mutations: add or remove items at runtime
-await playlist.add(AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/110.mp3')));
+await player.addAudioSource(
+  AudioSource.uri(Uri.parse('https://server10.mp3quran.net/minsh/110.mp3')),
+);
 ```
 
 ### 3. Volume, Speed & Seeking
@@ -338,26 +338,29 @@ Developing desktop audio means interfacing with COM and WinRT media notification
 Every capability in this package is proven by automated tests. We believe in **evidence over assertions**:
 
 ```powershell
-# 1. Run the Dart channel-contract suite (107 tests)
+# 1. Run the Dart channel-contract suite (109 tests)
 flutter test
 
-# 2. Run native C++ source tree and dispatcher unit tests (40 tests)
+# 2. Run native C++ source tree and dispatcher unit tests (54 tests)
 powershell -ExecutionPolicy Bypass tool/test_native.ps1
 
-# 3. Run the real Windows playback regression suite (42 scenarios)
+# 3. Run the real Windows playback regression suite (52 scenarios)
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode debug
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode release
 ```
 
 ### Summary of Verified Scenarios:
 - **Exact Microsecond Duration**: Asserts 3-second WAV fixture returns exact 3000ms duration from `load`.
-- **Missing Files & HTTP 404**: Asserts immediate resolution with `PlayerException` (no hanging Futures).
-- **`play()` Completion Semantics**: Asserts Future completes at pause or EOF; preserves `playing=true`.
+- **Missing Files & HTTP 404**: Asserts immediate resolution with `PlayerException` (no hanging Futures) and structured WinRT category + hex `HRESULT` diagnostics.
+- **`play()` Completion Semantics**: Asserts Future completes at pause or EOF; preserves `playing=true` and stays `ProcessingState.completed` without extrapolating position after playlist completion.
 - **Full Playlist Looping**: Asserts exact track progression `0 → 1 → 0` under `LoopMode.all`.
 - **Deterministic Shuffle**: Asserts custom shuffle sequence `0 → 2 → 1` in automatic playback.
-- **Cross-Item Seeking**: Asserts seeking to a non-zero position across different items preserves exact timeline offset.
-- **Dynamic Playlist Insertion**: Asserts adding items to an initially empty playlist attaches source and plays.
-- **Nested Source Trees**: Concatenating within concatenating, finite looping expansion, and ID mutations.
+- **Cross-Item & Rapid Scrub Seeking**: Asserts seeking across different items preserves exact timeline offset, and rapid cross-item scrubs back to index `0` land deterministically on index `0` and the target timestamp.
+- **Dynamic Playlist Insertion & `clearAudioSources()`**: Asserts adding items to an initially empty playlist attaches source and plays, and clearing all sources mid-playback halts hardware audio immediately (`ProcessingState.completed`), re-attaches via `addAudioSource()`, and reloads cleanly.
+- **Nested & Clipped Source Trees**: Concatenating within concatenating, finite looping expansion, multi-clip `ClippingAudioSource` items on a single file (including open-ended clips), and ID mutations.
+- **Non-ASCII Paths & Reserved Characters**: Real WinRT playback of Vietnamese and Arabic paths containing spaces, `#`, `%`, `[`, `]`, `{`, `}`, `^`, and `` ` ``.
+- **Local HTTP Proxy Headers & User-Agent**: Verifies `AudioSource.uri(uri, headers: ...)` and custom `userAgent` routed through `just_audio`'s loopback HTTP proxy.
+- **Playback Speed Persistence**: Asserts `0.25x` and `3.0x` playback rates survive automatic and explicit track transitions.
 - **Disposal Under Heavy Stress**: Rapid create/load/seek/dispose iterations with callbacks in-flight without crash.
 - **Concurrent Independent Players**: Multiple simultaneous players running concurrently without cross-talk.
 - **Play Before Load**: Asserts `play()` issued before its `load` still waits for the real end of media, which is the path `just_audio` takes on platform activation.
@@ -387,7 +390,7 @@ Whatever the host's Windows Media Foundation can decode, which on a typical Wind
 Because `just_audio_windows_plus` cleanly disables automatic WinRT SMTC hijacking, you can use [`audio_service`](https://pub.dev/packages/audio_service) to manage OS lockscreen widgets and keyboard media keys with total control.
 
 #### Q: Can I pass custom HTTP headers with audio URLs?
-Direct native URL playback in WinRT does not support custom request headers. For audio sources requiring authentication tokens or custom headers, route them through `just_audio`'s built-in local HTTP proxy (`AudioSource.uri(uri, headers: {...})`).
+Yes — use `AudioSource.uri(uri, headers: {...})` (or `setUrl(url, headers: {...})`) with `just_audio`'s default `useProxyForRequestHeaders: true` and `userAgent` configuration. `just_audio` automatically serves those requests through its built-in loopback HTTP proxy (`127.0.0.1` / `localhost` / `[::1]`), which `just_audio_windows_plus` accepts and forwards cleanly. Direct non-loopback URL headers without the proxy remain rejected with an `argument_error` because WinRT `MediaPlayer` does not attach custom HTTP headers to remote URL requests.
 
 #### Q: Why do `setPitch` and `setSkipSilence` return errors?
 WinRT's native media player does not support independent pitch shifting or silence skipping in this architecture. Rather than silently pretending to succeed, the engine follows a fail-fast design and returns an explicit `unsupported` error for non-default values.

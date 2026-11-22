@@ -11,3 +11,6 @@ tool/
 windows/build/
 pubspec.lock
 example/pubspec.lock
+**/x64/
+example/native-test-results/
+example/windows/flutter/ephemeral/

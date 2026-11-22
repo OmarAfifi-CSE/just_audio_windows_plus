@@ -1,5 +1,7 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+
 import 'package:just_audio/just_audio.dart';
+import 'package:material_ui/material_ui.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +41,8 @@ class _AudioPlayerExampleState extends State<AudioPlayerExample> {
   @override
   void initState() {
     super.initState();
-    _player = AudioPlayer()..setAudioSources(_playlist);
+    _player = AudioPlayer();
+    unawaited(_player.setAudioSources(_playlist).catchError((Object _) => null));
   }
 
   @override

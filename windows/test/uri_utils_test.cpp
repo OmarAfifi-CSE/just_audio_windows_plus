@@ -199,6 +199,73 @@ TEST(EscapeUriPath, DecodedDartUri_RoundTrips) {
       "file:///C:/Đọc%20diễn%20cảm/0.wav");
 }
 
+// Percent-encoded NUL bytes (%00) must remain escaped so embedded NUL chars
+// never truncate a WinRT Uri string.
+TEST(DecodePercentEscapes, EmbeddedNulEscape_KeptLiterally) {
+  EXPECT_EQ(DecodePercentEscapes("file:///C:/foo%00bar.wav"),
+            "file:///C:/foo%00bar.wav");
+}
+
+TEST(PrepareNativeSourceUri, HandlesLocalAndUncFileSchemesAndPreservesHttp) {
+  EXPECT_EQ(
+      PrepareNativeSourceUri(
+          "FILE:///C:/%C4%90%E1%BB%8Dc/100%25%20%231%3F.wav"),
+      "FILE:///C:/Đọc/100%25%20%231%3F.wav");
+  EXPECT_EQ(
+      PrepareNativeSourceUri(
+          "file://fileserver/share/%D8%AA%D9%84%D8%A7%D9%88%D8%A9%201.wav"),
+      "file://fileserver/share/تلاوة%201.wav");
+  EXPECT_EQ(
+      PrepareNativeSourceUri(
+          "https://example.com/speech?q=I%E2%80%99d like"),
+      "https://example.com/speech?q=I%E2%80%99d%20like");
+  // ASCII escapes, invalid UTF-8/surrogates/overlongs, and URI query/fragment stay intact.
+  EXPECT_EQ(
+      PrepareNativeSourceUri("file:///C:/Audio/%7Btest%7D%5E%601.wav"),
+      "file:///C:/Audio/%7Btest%7D%5E%601.wav");
+  EXPECT_EQ(
+      PrepareNativeSourceUri("file:///C:/foo%00bar.wav"),
+      "file:///C:/foo%00bar.wav");
+  EXPECT_EQ(
+      PrepareNativeSourceUri("file:///C:/%FF_%ED%A0%80_%C0%AF.mp3"),
+      "file:///C:/%FF_%ED%A0%80_%C0%AF.mp3");
+  EXPECT_EQ(
+      PrepareNativeSourceUri("file:///C:/a%2Fb.mp3"),
+      "file:///C:/a%2Fb.mp3");
+  EXPECT_EQ(
+      PrepareNativeSourceUri("file:///C:/stream?v=1#audio.m3u8"),
+      "file:///C:/stream?v=1#audio.m3u8");
+  EXPECT_EQ(
+      PrepareNativeSourceUri("file:///C:/%F0%9F%8E%B5%20song.wav"),
+      "file:///C:/🎵%20song.wav");
+}
+
+TEST(IsLoopbackHttpUri, AcceptsOnlyStrictLoopbackHttpAuthorities) {
+  EXPECT_TRUE(IsLoopbackHttpUri("http://127.0.0.1:8080/track.mp3"));
+  EXPECT_TRUE(IsLoopbackHttpUri("http://127.0.0.1:1/track.mp3"));
+  EXPECT_TRUE(IsLoopbackHttpUri("http://127.0.0.1:65535/track.mp3"));
+  EXPECT_TRUE(IsLoopbackHttpUri("HTTP://127.0.0.1/track.mp3?token=1"));
+  EXPECT_TRUE(IsLoopbackHttpUri("http://[::1]:5050/stream.m3u8"));
+  EXPECT_TRUE(IsLoopbackHttpUri("http://[::1]/stream.m3u8"));
+  EXPECT_TRUE(IsLoopbackHttpUri("http://localhost:9000/track.wav"));
+  EXPECT_TRUE(IsLoopbackHttpUri("http://LocalHost/track.wav#frag"));
+
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1:0/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1:65536/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1:99999/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1:100000/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1:/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("https://127.0.0.1:8080/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1.evil.com/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://localhost.evil.com/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1@evil.com/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://user:pass@127.0.0.1:8080/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://[::1]evil.com/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("http://127.0.0.1:abc/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("https://example.com/track.mp3"));
+  EXPECT_FALSE(IsLoopbackHttpUri("file:///C:/audio.mp3"));
+}
+
 TEST(ClampBufferedPosition, KeepsPositionWithinDuration) {
   EXPECT_EQ(ClampBufferedPosition(100, -1.0), 0);
   EXPECT_EQ(ClampBufferedPosition(100, 0.5), 50);

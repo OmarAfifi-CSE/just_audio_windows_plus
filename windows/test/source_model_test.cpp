@@ -225,5 +225,29 @@ TEST(SourceModel, MissingWrongTypedAndUnsupportedSourcesFailWithOwnedMessages) {
   const std::vector<std::string> churn(200, std::string(2048, 'x'));
   EXPECT_EQ(saved.message, "Unsupported audio source type: " + unsupported);
 }
+
+TEST(SourceModel, LoopbackProxyHeadersAreAllowedWhileExternalHeadersAreRejected) {
+  const EncodableMap auth_headers{
+      {EncodableValue("Authorization"), EncodableValue("Bearer tok")}};
+  for (const std::string type : {"progressive", "hls", "dash"}) {
+    auto loopback = Uri("a", type);
+    loopback[EncodableValue("uri")] =
+        EncodableValue("http://127.0.0.1:54321/item.m3u8?q=1");
+    loopback[EncodableValue("headers")] = EncodableValue(auth_headers);
+    EXPECT_NO_THROW(SourceNode::Parse(loopback));
+
+    for (const std::string bad_uri : {
+             "https://cdn.example.com/item.mp3",
+             "http://192.168.1.50/item.mp3",
+             "http://127.0.0.1.evil.com/item.mp3",
+             "http://127.0.0.1@evil.com/item.mp3",
+         }) {
+      auto external = Uri("a", type);
+      external[EncodableValue("uri")] = EncodableValue(bad_uri);
+      external[EncodableValue("headers")] = EncodableValue(auth_headers);
+      EXPECT_THROW(SourceNode::Parse(external), ArgumentError);
+    }
+  }
+}
 }  // namespace
 }  // namespace jaw

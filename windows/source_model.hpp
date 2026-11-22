@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "uri_utils.hpp"
+
 namespace jaw {
 using flutter::EncodableList;
 using flutter::EncodableMap;
@@ -94,11 +96,14 @@ struct SourceNode {
       auto end = OptionalInteger(data, "end", -1);
       if (start < 0 || (end != -1 && end <= start)) throw ArgumentError{"Invalid clipping range"};
     } else if (node.type == "progressive" || node.type == "hls" || node.type == "dash") {
-      if (Require<std::string>(data, "uri").empty()) throw ArgumentError{"Source URI is empty"};
+      const auto& uri = Require<std::string>(data, "uri");
+      if (uri.empty()) throw ArgumentError{"Source URI is empty"};
       if (auto headers = Find(data, "headers"); headers && !headers->IsNull()) {
         auto map = std::get_if<EncodableMap>(headers);
         if (!map) throw ArgumentError{"headers must be a map"};
-        if (!map->empty()) throw ArgumentError{"Direct HTTP headers are unsupported; use just_audio's proxy"};
+        if (!map->empty() && !IsLoopbackHttpUri(uri)) {
+          throw ArgumentError{"Direct HTTP headers on non-loopback URIs are unsupported; use just_audio's proxy"};
+        }
       }
     } else {
       throw ArgumentError{"Unsupported audio source type: " + node.type};

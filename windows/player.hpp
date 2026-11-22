@@ -92,16 +92,58 @@ inline std::wstring TO_WIDESTRING(const std::string& string) {
 // Local files are decoded and re-escaped before they reach Uri: Dart's
 // Uri.file() percent-encodes non-ASCII characters as UTF-8, and WinRT cannot
 // resolve such a path (MediaPlayer reports "The system cannot find the path
-// specified"). Letting Uri encode the literal characters itself keeps paths
-// with accented or non-Latin directory names playable.
+// specified"). Letting Uri encode the literal characters itself keeps local and
+// UNC paths with non-Latin or accented names playable.
 inline MediaSource CreateSourceMedia(const std::string& uri) {
-  constexpr char kFilePrefix[] = "file:///";
-  constexpr size_t kFilePrefixLength = sizeof(kFilePrefix) - 1;
-  if (uri.compare(0, kFilePrefixLength, kFilePrefix) == 0) {
-    return MediaSource::CreateFromUri(
-        Uri(TO_WIDESTRING(EscapeUriPath(DecodePercentEscapes(uri)))));
+  return MediaSource::CreateFromUri(
+      Uri(TO_WIDESTRING(PrepareNativeSourceUri(uri))));
+}
+
+inline const char* MediaPlayerErrorCategory(Playback::MediaPlayerError error) {
+  switch (error) {
+    case Playback::MediaPlayerError::Aborted:
+      return "Playback aborted (Aborted)";
+    case Playback::MediaPlayerError::NetworkError:
+      return "Network error (NetworkError)";
+    case Playback::MediaPlayerError::DecodingError:
+      return "Decoder failed (DecodingError)";
+    case Playback::MediaPlayerError::SourceNotSupported:
+      return "Unsupported format (SourceNotSupported)";
+    default:
+      return "";
   }
-  return MediaSource::CreateFromUri(Uri(TO_WIDESTRING(EncodeSpacesInUri(uri))));
+}
+
+inline const char* MediaItemErrorCategory(
+    Playback::MediaPlaybackItemErrorCode code) {
+  switch (code) {
+    case Playback::MediaPlaybackItemErrorCode::Aborted:
+      return "Playback aborted (Aborted)";
+    case Playback::MediaPlaybackItemErrorCode::NetworkError:
+      return "Network error (NetworkError)";
+    case Playback::MediaPlaybackItemErrorCode::DecodeError:
+      return "Decoder failed (DecodingError)";
+    case Playback::MediaPlaybackItemErrorCode::SourceNotSupportedError:
+      return "Unsupported format (SourceNotSupported)";
+    case Playback::MediaPlaybackItemErrorCode::EncryptionError:
+      return "Encrypted source unsupported (EncryptionError)";
+    default:
+      return "";
+  }
+}
+
+inline bool IsMessengerAvailable(
+    const std::function<bool()>& is_messenger_available) {
+  return !is_messenger_available || is_messenger_available();
+}
+
+inline void UnregisterHandlerIfAvailable(
+    flutter::BinaryMessenger* messenger,
+    const std::string& channel,
+    const std::function<bool()>& is_messenger_available) {
+  if (messenger && IsMessengerAvailable(is_messenger_available)) {
+    messenger->SetMessageHandler(channel, nullptr);
+  }
 }
 
 class JustAudioEventSink {
@@ -109,21 +151,26 @@ public:
   JustAudioEventSink(JustAudioEventSink const&) = delete;
   JustAudioEventSink& operator=(JustAudioEventSink const&) = delete;
 
-  JustAudioEventSink(flutter::BinaryMessenger* messenger, const std::string& id)
-      : messenger_(messenger), id_(id) {
+  JustAudioEventSink(flutter::BinaryMessenger* messenger,
+                     const std::string& id,
+                     std::function<bool()> is_messenger_available = {})
+      : messenger_(messenger),
+        id_(id),
+        is_messenger_available_(std::move(is_messenger_available)) {
     auto event_channel =
       std::make_unique<flutter::EventChannel<flutter::EncodableValue>>(
         messenger_, id_, &flutter::StandardMethodCodec::GetInstance());
 
+    auto state = state_;
     auto event_handler = std::make_unique<flutter::StreamHandlerFunctions<>>(
-      [this](const EncodableValue* arguments, std::unique_ptr<flutter::EventSink<>>&& events) -> std::unique_ptr<flutter::StreamHandlerError<>> {
-        std::lock_guard<std::mutex> lock(sink_mutex_);
-        sink = std::move(events);
+      [state](const EncodableValue* arguments, std::unique_ptr<flutter::EventSink<>>&& events) -> std::unique_ptr<flutter::StreamHandlerError<>> {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->sink = std::move(events);
         return nullptr;
       },
-      [this](const EncodableValue* arguments) -> std::unique_ptr<flutter::StreamHandlerError<>> {
-        std::lock_guard<std::mutex> lock(sink_mutex_);
-        sink.reset();
+      [state](const EncodableValue* arguments) -> std::unique_ptr<flutter::StreamHandlerError<>> {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->sink.reset();
         return nullptr;
       });
 
@@ -131,25 +178,27 @@ public:
   }
 
   ~JustAudioEventSink() {
-    std::lock_guard<std::mutex> lock(sink_mutex_);
-    sink.reset();
-    if (messenger_) {
-      messenger_->SetMessageHandler(id_, nullptr);
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      state_->sink.reset();
     }
+    UnregisterHandlerIfAvailable(messenger_, id_, is_messenger_available_);
   }
 
-  bool Success(const EncodableValue& event) {
+  bool Success(const EncodableValue& event, bool* delivery_failed = nullptr) {
+    if (delivery_failed) *delivery_failed = false;
+    if (!IsMessengerAvailable(is_messenger_available_)) return false;
     bool schedule_recovery = false;
     bool delivered = false;
     {
-      std::lock_guard<std::mutex> lock(sink_mutex_);
-      if (sink) {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      if (state_->sink) {
         try {
-          sink->Success(event);
+          state_->sink->Success(event);
           delivered = true;
         } catch (...) {
           try {
-            sink->Success(event);
+            state_->sink->Success(event);
             delivered = true;
           } catch (...) {
             schedule_recovery = true;
@@ -157,7 +206,8 @@ public:
         }
       }
     }
-    // Invoked after releasing sink_mutex_: the recovery hook re-enters the
+    if (schedule_recovery && delivery_failed) *delivery_failed = true;
+    // Invoked after releasing state_->mutex: the recovery hook re-enters the
     // sink through a full-state Broadcast(), and calling it under the lock
     // would deadlock.
     if (schedule_recovery && deferred_recovery_) deferred_recovery_();
@@ -173,10 +223,15 @@ public:
   }
 
   private:
+  struct SinkState {
+    std::mutex mutex;
+    std::unique_ptr<flutter::EventSink<>> sink = nullptr;
+  };
+
   flutter::BinaryMessenger* messenger_ = nullptr;
   std::string id_;
-  std::mutex sink_mutex_;
-  std::unique_ptr<flutter::EventSink<>> sink = nullptr;
+  std::function<bool()> is_messenger_available_;
+  std::shared_ptr<SinkState> state_ = std::make_shared<SinkState>();
   std::function<void()> deferred_recovery_;
 };
 
@@ -185,13 +240,22 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   using Result = flutter::MethodResult<EncodableValue>;
 
   AudioPlayer(std::string id, flutter::BinaryMessenger* messenger,
-              std::shared_ptr<PlatformThreadDispatcher> dispatcher)
-      : id_(std::move(id)), dispatcher_(std::move(dispatcher)) {
+              std::shared_ptr<PlatformThreadDispatcher> dispatcher,
+              std::function<bool()> is_messenger_available = {},
+              std::function<void()> on_disposed = {})
+      : id_(std::move(id)),
+        dispatcher_(std::move(dispatcher)),
+        is_messenger_available_(std::move(is_messenger_available)),
+        on_disposed_(std::move(on_disposed)) {
     player_channel_ = std::make_unique<flutter::MethodChannel<EncodableValue>>(
         messenger, "com.ryanheise.just_audio.methods." + id_,
         &flutter::StandardMethodCodec::GetInstance());
-    event_sink_ = std::make_unique<JustAudioEventSink>(messenger, "com.ryanheise.just_audio.events." + id_);
-    data_sink_ = std::make_unique<JustAudioEventSink>(messenger, "com.ryanheise.just_audio.data." + id_);
+    event_sink_ = std::make_unique<JustAudioEventSink>(
+        messenger, "com.ryanheise.just_audio.events." + id_,
+        is_messenger_available_);
+    data_sink_ = std::make_unique<JustAudioEventSink>(
+        messenger, "com.ryanheise.just_audio.data." + id_,
+        is_messenger_available_);
   }
 
   // Called only after shared ownership exists. Every native callback posts
@@ -215,17 +279,33 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     ResetNative();
   }
 
-  ~AudioPlayer() { Dispose(); }
+  ~AudioPlayer() {
+    Dispose(/*unregister_channel=*/true);
+    UnregisterPlayerChannel();
+  }
   bool HasPlayerId(const std::string& id) const { return id_ == id; }
 
-  void Dispose() {
-    if (disposed_) return;
+  void UnregisterPlayerChannel() {
+    if (channel_unregistered_) return;
+    channel_unregistered_ = true;
+    if (player_channel_ && IsMessengerAvailable(is_messenger_available_)) {
+      player_channel_->SetMethodCallHandler(nullptr);
+    }
+  }
+
+  void Dispose(bool unregister_channel = true) {
+    if (disposed_) {
+      if (unregister_channel) UnregisterPlayerChannel();
+      return;
+    }
     disposed_ = true;
     ++generation_;
     CancelLoad("Player disposed");
     CompletePlay();
     ReleaseNative();
-    if (player_channel_) player_channel_->SetMethodCallHandler(nullptr);
+    if (unregister_channel) {
+      UnregisterPlayerChannel();
+    }
     event_sink_.reset();
     data_sink_.reset();
   }
@@ -233,6 +313,9 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
  private:
   std::string id_;
   std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
+  std::function<bool()> is_messenger_available_;
+  std::function<void()> on_disposed_;
+  bool channel_unregistered_ = false;
   std::unique_ptr<flutter::MethodChannel<EncodableValue>> player_channel_;
   std::unique_ptr<JustAudioEventSink> event_sink_;
   std::unique_ptr<JustAudioEventSink> data_sink_;
@@ -270,7 +353,8 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   bool seek_arm_cic_seen_ = false;
   bool seek_in_progress_ = false;
   int64_t target_seek_position_ = 0;
-  std::atomic<uint64_t> seek_generation_{0};
+  std::shared_ptr<std::atomic<uint64_t>> seek_generation_ =
+      std::make_shared<std::atomic<uint64_t>>(0);
   std::chrono::steady_clock::time_point seek_deadline_{};
   int64_t requested_index_ = 0;
   Playback::MediaPlaybackItem pending_item_{nullptr};
@@ -296,7 +380,10 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
             auto owner = weak.lock();
             if (!owner || owner->disposed_ || owner->generation_ != generation) return;
             try { action(*owner); }
-            catch (const winrt::hresult_error& error) { owner->Fail(winrt::to_string(error.message())); }
+            catch (const winrt::hresult_error& error) {
+              owner->Fail(FormatWinRtPlaybackError(
+                  "", error.code().value, winrt::to_string(error.message())));
+            }
             catch (const jaw::ArgumentError& error) { owner->Fail(error.message); }
             catch (...) { owner->Fail("Native playback callback failed"); }
           });
@@ -310,6 +397,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   void ReleaseNative() {
     for (auto& revoke : revoke_) { try { revoke(); } catch (...) {} }
     revoke_.clear();
+    pending_item_ = nullptr;
     if (player_) { try { player_.Close(); } catch (...) {} }
     player_ = nullptr;
     list_ = nullptr;
@@ -323,7 +411,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     player_.CommandManager().IsEnabled(false);
     player_.AutoPlay(false);
     player_.Volume(volume_);
-    player_.PlaybackSession().PlaybackRate(speed_);
+    ApplyPlaybackRate();
     list_.MaxPlayedItemsToKeepOpen(2);
     auto enqueue = Enqueue();
     auto session = player_.PlaybackSession();
@@ -343,12 +431,12 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       enqueue([](AudioPlayer& owner) { owner.Broadcast(); });
     });
     revoke_.push_back([session, download] { session.DownloadProgressChanged(download); });
-    // Capture seek generation on the WinRT thread-pool before posting so
-    // an earlier seek's SeekCompleted cannot clear a newer fake-position.
-    std::weak_ptr<AudioPlayer> seekWeak = weak_from_this();
-    auto seekCompleted = session.SeekCompleted([enqueue, seekWeak](auto, auto) {
-      uint64_t gen = 0;
-      if (auto sp = seekWeak.lock()) gen = sp->seek_generation_.load();
+    // Capture seek generation directly off a thread-safe shared atomic so
+    // SeekCompleted never locks weak_ptr<AudioPlayer> (or destroys AudioPlayer)
+    // on a WinRT background thread.
+    auto seek_gen = seek_generation_;
+    auto seekCompleted = session.SeekCompleted([enqueue, seek_gen](auto, auto) {
+      const uint64_t gen = seek_gen->load();
       enqueue([gen](AudioPlayer& owner) {
         owner.OnSeekCompleted(gen);
       });
@@ -369,29 +457,54 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     });
     revoke_.push_back([player, ended] { player.MediaEnded(ended); });
     auto failed = player.MediaFailed([enqueue](auto, const Playback::MediaPlayerFailedEventArgs& args) {
-      const auto message = winrt::to_string(args.ErrorMessage());
+      std::string category;
+      int32_t hr = 0;
+      std::string os_message;
+      try { category = MediaPlayerErrorCategory(args.Error()); } catch (...) {}
+      try { hr = args.ExtendedErrorCode().value; } catch (...) {}
+      try { os_message = winrt::to_string(args.ErrorMessage()); } catch (...) {}
+      const auto message = FormatWinRtPlaybackError(category, hr, os_message);
       enqueue([message](AudioPlayer& owner) { owner.Fail(message); });
     });
     revoke_.push_back([player, failed] { player.MediaFailed(failed); });
     auto list = list_;
-    auto changed = list.CurrentItemChanged([enqueue](auto, auto) {
-      enqueue([](AudioPlayer& owner) {
-        // Mark the arm's switch as observed *before* any application, so
-        // the Broadcast() retry can never fire inside the pre-switch window.
-        owner.seek_arm_cic_seen_ = true;
-        owner.completed_ = false;
-        // A cross-item seek whose target is still open in the keep-open
-        // window never receives MediaOpened, so Opened() would never
-        // consume the deferred seek. Apply it here when the pipeline is not
-        // mid-open; fresh items stay deferred for Opened().
-        owner.ApplyDeferredSeekIfReady();
-        owner.Broadcast();
-      });
-    });
+    auto changed = list.CurrentItemChanged(
+        [enqueue](auto, const Playback::CurrentMediaPlaybackItemChangedEventArgs& args) {
+          bool has_new_item = false;
+          try { has_new_item = args.NewItem() != nullptr; } catch (...) {}
+          enqueue([has_new_item](AudioPlayer& owner) {
+            if (has_new_item && !owner.leaves_.empty()) {
+              // Mark the arm's switch as observed *before* any application, so
+              // the Broadcast() retry can never fire inside the pre-switch window.
+              owner.seek_arm_cic_seen_ = true;
+              owner.completed_ = false;
+              // Re-assert caller speed across track switches so WinRT keeps it.
+              owner.ApplyPlaybackRate();
+              // A cross-item seek whose target is still open in the keep-open
+              // window never receives MediaOpened, so Opened() would never
+              // consume the deferred seek. Apply it here when the pipeline is not
+              // mid-open; fresh items stay deferred for Opened().
+              owner.ApplyDeferredSeekIfReady();
+            }
+            owner.Broadcast();
+          });
+        });
     revoke_.push_back([list, changed] { list.CurrentItemChanged(changed); });
     auto itemFailed = list.ItemFailed([enqueue](auto, const Playback::MediaPlaybackItemFailedEventArgs& args) {
       auto item = args.Item();
-      auto message = winrt::to_string(winrt::hresult_error(args.Error().ExtendedError()).message());
+      std::string category;
+      int32_t hr = 0;
+      std::string os_message;
+      try {
+        auto error = args.Error();
+        category = MediaItemErrorCategory(error.ErrorCode());
+        hr = error.ExtendedError().value;
+        if (hr != 0) {
+          os_message = winrt::to_string(
+              winrt::hresult_error(error.ExtendedError()).message());
+        }
+      } catch (...) {}
+      const auto message = FormatWinRtPlaybackError(category, hr, os_message);
       enqueue([item, message](AudioPlayer& owner) {
         // A prefetched future item failing must not abort a different load,
         // but the item the pending load is waiting on must. When the initial
@@ -456,7 +569,8 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
             try {
               owner->Broadcast(/*force_data=*/true);
             } catch (const winrt::hresult_error& error) {
-              owner->Fail(winrt::to_string(error.message()));
+              owner->Fail(FormatWinRtPlaybackError(
+                  "", error.code().value, winrt::to_string(error.message())));
             } catch (const std::exception& error) {
               owner->Fail(error.what());
             } catch (...) {
@@ -506,7 +620,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     // must not clear the newer target.
     seek_in_progress_ = true;
     target_seek_position_ = position;
-    seek_generation_++;
+    ++(*seek_generation_);
     // Built from a monotonic clock, so this can only ever move the deadline
     // forward: a rapid scrub can never shorten an already-armed window.
     seek_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -516,7 +630,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     // Only called via Enqueue on platform thread for the MediaPlayer's own
     // SeekCompleted. Ignore completions for an earlier seek that was
     // superseded by a newer BeginSeek — otherwise the fake position snaps.
-    if (generation_at_post != seek_generation_) return;
+    if (generation_at_post != seek_generation_->load()) return;
     seek_in_progress_ = false;
     // A seek issued while the pipeline was switching items can swallow the
     // Play() that accompanied it: the session was still transitional. Once
@@ -537,14 +651,29 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   // case stays deferred for Opened(), which fires when the item becomes
   // available).
   void ApplyDeferredSeekIfReady() {
-    if (!seek_pending_ || !seek_arm_cic_seen_ || loading_ || disposed_) return;
+    if (!seek_pending_ || !seek_arm_cic_seen_ || loading_ || failed_ ||
+        leaves_.empty() || disposed_) {
+      return;
+    }
     try {
-      // During an item switch the list can briefly report no current item;
-      // applying a position into that void loses it for good.
-      if (list_.CurrentItemIndex() == UINT32_MAX) return;
-      if (player_.PlaybackSession().PlaybackState() == Playback::MediaPlaybackState::Opening) return;
+      // During an item switch or rapid scrub, the list can report no current
+      // item or transiently sit on an intermediate item before MoveTo lands.
+      const auto current_idx = list_.CurrentItemIndex();
+      if (current_idx == UINT32_MAX ||
+          current_idx != static_cast<uint32_t>(requested_index_)) {
+        return;
+      }
+      auto session = player_.PlaybackSession();
+      if (session.PlaybackState() == Playback::MediaPlaybackState::Opening) return;
+      bool can_seek = true;
+      try { can_seek = session.CanSeek(); } catch (...) {}
+      if (!can_seek) {
+        seek_pending_ = false;
+        ClearSeek();
+        return;
+      }
       BeginSeek(seek_position_);
-      player_.PlaybackSession().Position(MicrosToTimeSpan(seek_position_));
+      session.Position(MicrosToTimeSpan(seek_position_));
       seek_pending_ = false;
     } catch (...) {
       // WinRT properties can be transiently unavailable while the list is
@@ -555,10 +684,23 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     seek_in_progress_ = false;
     target_seek_position_ = 0;
   }
+  void ApplyPlaybackRate() {
+    if (!player_) return;
+    try { player_.PlaybackSession().PlaybackRate(speed_); } catch (...) {}
+  }
+
   void Opened() {
     if (failed_ || leaves_.empty()) return;
+    uint32_t current_idx = UINT32_MAX;
+    try { current_idx = list_.CurrentItemIndex(); } catch (...) {}
+    if (loading_ && current_idx != UINT32_MAX &&
+        current_idx != static_cast<uint32_t>(requested_index_)) {
+      Broadcast();
+      return;
+    }
     loading_ = false;
     pending_item_ = nullptr;
+    ApplyPlaybackRate();
     if (seek_pending_) {
       // Apply only when the item that opened is the one the arm targets.
       // A cross-item seek racing the load's in-flight open can deliver this
@@ -566,17 +708,29 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       // list; applying blindly would land the position on the wrong item.
       // Declining leaves the arm set — Broadcast() retries it once the
       // pipeline settles on the intended item.
-      if (list_.CurrentItemIndex() == static_cast<uint32_t>(requested_index_)) {
-        BeginSeek(seek_position_);
-        player_.PlaybackSession().Position(MicrosToTimeSpan(seek_position_));
+      if (current_idx == static_cast<uint32_t>(requested_index_)) {
+        auto session = player_.PlaybackSession();
+        bool can_seek = true;
+        try { can_seek = session.CanSeek(); } catch (...) {}
+        if (can_seek) {
+          BeginSeek(seek_position_);
+          try {
+            session.Position(MicrosToTimeSpan(seek_position_));
+          } catch (...) {
+            ClearSeek();
+          }
+        }
         seek_pending_ = false;
       }
     }
-    if (playing_) player_.Play();
+    if (playing_) { try { player_.Play(); } catch (...) {} }
     Broadcast();
     if (pending_load_) {
       int64_t duration = 0;
-      try { duration = TimeSpanToMicroseconds(player_.PlaybackSession().NaturalDuration()); } catch (...) {}
+      try {
+        duration = NormalizeDurationMicroseconds(
+            player_.PlaybackSession().NaturalDuration().count());
+      } catch (...) {}
       auto result = std::move(pending_load_);
       result->Success(EncodableMap{{EncodableValue("duration"), duration > 0 ? EncodableValue(duration) : EncodableValue()}});
     }
@@ -669,11 +823,11 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     leaves_ = std::move(leaves);
     loading_ = !leaves_.empty();
     source_set_ = true;
-    failed_ = completed_ = false;
-    // An empty playlist can never open an item, so arming a deferred seek
-    // there would be an arm nothing consumes (and the Broadcast retry could
-    // paint its position onto an idle engine).
-    seek_pending_ = !leaves_.empty();
+    failed_ = false;
+    completed_ = leaves_.empty();
+    // Only arm a deferred seek on load when the caller requested a non-zero
+    // initialPosition; live/unseekable streams reject Position(0).
+    seek_pending_ = !leaves_.empty() && position > 0;
     seek_position_ = position;
     seek_arm_cic_seen_ = false;
     requested_index_ = index;
@@ -780,70 +934,123 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       }
       throw;
     }
+    const bool was_empty = leaves_.empty();
     tree_ = std::move(tree);
     leaves_ = std::move(leaves);
-    // A playlist that was loaded empty never attached the list to the player;
-    // the first insertion must attach it or playback stays silent.
-    if (!leaves_.empty() && player_.Source() == nullptr) {
-      player_.Source(list_.as<Playback::IMediaPlaybackSource>());
-    }
-    ApplyModes();
-    if (current) {
-      auto found = std::find(desired.begin(), desired.end(), current);
-      if (found != desired.end()) {
-        if (list_.CurrentItem() != current) {
-          // Best-effort after the tree and list edits are already committed:
-          // a transient COM throw from MoveTo must not error the whole
-          // mutation (Dart's tree now describes the edited list, so an error
-          // here would diverge the two) — it just skips the re-selection,
-          // and the surviving item keeps playing where it is.
-          try { list_.MoveTo(static_cast<uint32_t>(found - desired.begin())); } catch (...) {
-            JAW_ERROR("Mutate: MoveTo to surviving item failed");
+    if (was_empty && !leaves_.empty()) {
+      ApplyModes();
+      size_t start_idx = 0;
+      if (shuffle_mode_ == 1) {
+        std::vector<size_t> order;
+        tree_.Order(order);
+        if (!order.empty() && order.front() < desired.size()) {
+          start_idx = order.front();
+        }
+      }
+      try { list_.StartingItem(desired[start_idx]); } catch (...) {}
+      requested_index_ = static_cast<int64_t>(start_idx);
+      pending_item_ = desired[start_idx];
+      loading_ = true;
+      completed_ = false;
+      // A playlist that was loaded empty (or cleared to empty) has no attached
+      // source; the first insertion must re-attach it or playback stays silent.
+      if (player_.Source() == nullptr) {
+        player_.Source(list_.as<Playback::IMediaPlaybackSource>());
+      }
+    } else {
+      ApplyModes();
+      if (current) {
+        auto found = std::find(desired.begin(), desired.end(), current);
+        if (found != desired.end()) {
+          const auto surviving_idx = static_cast<int64_t>(found - desired.begin());
+          requested_index_ = surviving_idx;
+          if (list_.CurrentItem() != current) {
+            // Best-effort after the tree and list edits are already committed:
+            // a transient COM throw from MoveTo must not error the whole
+            // mutation (Dart's tree now describes the edited list, so an error
+            // here would diverge the two) — it just skips the re-selection,
+            // and the surviving item keeps playing where it is.
+            try { list_.MoveTo(static_cast<uint32_t>(surviving_idx)); } catch (...) {
+              JAW_ERROR("Mutate: MoveTo to surviving item failed");
+            }
+            seek_pending_ = true;
+            seek_position_ = position;
+            // A same-item MoveTo does not fire CurrentItemChanged, so mark the
+            // switch as already observed: the Broadcast retry may run for this
+            // arm if the inline application below transiently throws.
+            seek_arm_cic_seen_ = true;
+            // The surviving item is the same object the session is already
+            // describing, so the position re-set is race-free — but MoveTo to
+            // the same item does not fire CurrentItemChanged, so nothing else
+            // would consume the armed seek and a later same-item seek would
+            // defer forever. Consume it here; if WinRT chose to re-open the
+            // item for the move, the Position() set is discarded and the arm
+            // stays for Opened().
+            BeginSeek(position);
+            try {
+              player_.PlaybackSession().Position(MicrosToTimeSpan(position));
+              seek_pending_ = false;
+            } catch (...) {
+            }
           }
-          requested_index_ = static_cast<int64_t>(found - desired.begin());
+        } else if (!leaves_.empty()) {
+          // The currently playing item was removed. Without intervention the
+          // list keeps reporting no current item, playback wedges, and every
+          // broadcast carries a null duration and index. Advance to the item
+          // that shifted into the removed item's position instead; the switch
+          // to a different item fires CurrentItemChanged, which applies the
+          // armed seek once the pipeline settles (or defers to Opened()).
+          const auto next = current_index != UINT32_MAX
+              ? (std::min)(current_index, static_cast<uint32_t>(leaves_.size() - 1))
+              : static_cast<uint32_t>(0);
+          try { list_.MoveTo(next); } catch (...) {
+            // Same best-effort contract as above: the tree/list edits are
+            // committed, so the mutation succeeds; the advance is skipped.
+            JAW_ERROR("Mutate: MoveTo after current-item removal failed");
+          }
+          requested_index_ = static_cast<int64_t>(next);
+          if (loading_) pending_item_ = desired[next];
           seek_pending_ = true;
-          seek_position_ = position;
-          // A same-item MoveTo does not fire CurrentItemChanged, so mark the
-          // switch as already observed: the Broadcast retry may run for this
-          // arm if the inline application below transiently throws.
-          seek_arm_cic_seen_ = true;
-          // The surviving item is the same object the session is already
-          // describing, so the position re-set is race-free — but MoveTo to
-          // the same item does not fire CurrentItemChanged, so nothing else
-          // would consume the armed seek and a later same-item seek would
-          // defer forever. Consume it here; if WinRT chose to re-open the
-          // item for the move, the Position() set is discarded and the arm
-          // stays for Opened().
-          BeginSeek(position);
-          try {
-            player_.PlaybackSession().Position(MicrosToTimeSpan(position));
-            seek_pending_ = false;
-          } catch (...) {
-          }
+          seek_position_ = 0;
+          seek_arm_cic_seen_ = false;
+          BeginSeek(0);
         }
-      } else if (!leaves_.empty()) {
-        // The currently playing item was removed. Without intervention the
-        // list keeps reporting no current item, playback wedges, and every
-        // broadcast carries a null duration and index. Advance to the item
-        // that shifted into the removed item's position instead; the switch
-        // to a different item fires CurrentItemChanged, which applies the
-        // armed seek once the pipeline settles (or defers to Opened()).
-        const auto next = current_index != UINT32_MAX
-            ? (std::min)(current_index, static_cast<uint32_t>(leaves_.size() - 1))
-            : static_cast<uint32_t>(0);
-        try { list_.MoveTo(next); } catch (...) {
-          // Same best-effort contract as above: the tree/list edits are
-          // committed, so the mutation succeeds; the advance is skipped.
-          JAW_ERROR("Mutate: MoveTo after current-item removal failed");
+      } else if (loading_ && pending_item_ && !leaves_.empty()) {
+        auto found = std::find(desired.begin(), desired.end(), pending_item_);
+        if (found != desired.end()) {
+          requested_index_ = static_cast<int64_t>(found - desired.begin());
+        } else {
+          const auto safe_req = requested_index_ >= 0
+              ? static_cast<uint32_t>(requested_index_)
+              : static_cast<uint32_t>(0);
+          const auto next =
+              (std::min)(safe_req, static_cast<uint32_t>(leaves_.size() - 1));
+          requested_index_ = static_cast<int64_t>(next);
+          pending_item_ = desired[next];
+          try { list_.MoveTo(next); } catch (...) {}
         }
-        requested_index_ = static_cast<int64_t>(next);
-        seek_pending_ = true;
-        seek_position_ = 0;
-        seek_arm_cic_seen_ = false;
-        BeginSeek(0);
       }
     }
-    if (leaves_.empty()) { completed_ = true; CompletePlay(); }
+    if (leaves_.empty()) {
+      try {
+        if (list_) list_.StartingItem(nullptr);
+        if (player_) {
+          player_.Pause();
+          player_.Source(nullptr);
+        }
+      } catch (...) {}
+      loading_ = false;
+      pending_item_ = nullptr;
+      requested_index_ = 0;
+      if (auto result = std::move(pending_load_)) {
+        result->Success(EncodableMap{{EncodableValue("duration"), EncodableValue()}});
+      }
+      ClearSeek();
+      seek_pending_ = false;
+      seek_position_ = 0;
+      completed_ = true;
+      CompletePlay();
+    }
     Broadcast();
   }
 
@@ -910,11 +1117,9 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
         // implementation behaves.
         if (failed_ || (source_set_ && leaves_.empty()))
           CompletePlay();
-        // Restarting after a natural end must re-arm the completion lifecycle:
-        // without clearing the flag the plugin keeps reporting
-        // ProcessingState.completed forever, so just_audio never sees `ready`
-        // again and completion/repeat listeners stall on the second pass.
-        completed_ = false;
+        // Restarting after a natural end must re-arm the completion lifecycle,
+        // unless the loaded playlist is empty (no item can ever become ready).
+        completed_ = source_set_ && leaves_.empty();
         Broadcast();
         return;
       } else if (method == "pause" || method == "stop") {
@@ -969,49 +1174,80 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
           Broadcast();
           return result->Success(EncodableMap());
         }
-        completed_ = false;
-        if (index >= 0) requested_index_ = index;
-        if (index >= 0 && list_.CurrentItemIndex() != static_cast<uint32_t>(index)) {
-          seek_pending_ = true;
-          seek_position_ = position;
-          seek_arm_cic_seen_ = false;
-          // CurrentItemChanged fires as soon as MoveTo switches items and
-          // broadcasts a zero position for the fresh item; keep Broadcast()
-          // reporting the requested position until the seek lands. The
-          // application itself happens when the switch settles: for a fresh
-          // item MediaOpened fires and Opened() applies the position, and
-          // for an item that is still open in the keep-open window
-          // (MediaOpened never fires there) CurrentItemChanged applies it
-          // via ApplyDeferredSeekIfReady. Applying inline here instead
-          // would race the switch: the session can still be describing the
-          // previous item.
-          BeginSeek(position);
-          list_.MoveTo(static_cast<uint32_t>(index));
-        } else {
-          // A seek issued while the item is still opening would be overwritten
-          // by Opened() applying the load's deferred initial position, so arm
-          // the deferred seek with the newest position instead of letting the
-          // stale one land when the media opens. The direct Position() set is
-          // skipped in that window: the pipeline discards it before the open,
-          // and Opened() applies the deferred target once the item is open.
-          if (loading_ || seek_pending_) {
+        const bool prev_completed = completed_;
+        const int64_t prev_requested = requested_index_;
+        const bool prev_seek_pending = seek_pending_;
+        const int64_t prev_seek_position = seek_position_;
+        const bool prev_seek_arm_cic = seek_arm_cic_seen_;
+        const bool prev_seek_in_progress = seek_in_progress_;
+        const int64_t prev_target_seek_pos = target_seek_position_;
+        const auto prev_pending_item = pending_item_;
+        const bool switching_item =
+            index >= 0 &&
+            (list_.CurrentItemIndex() != static_cast<uint32_t>(index) ||
+             index != prev_requested);
+        try {
+          completed_ = false;
+          if (switching_item) {
+            requested_index_ = index;
+            if (loading_) {
+              pending_item_ = list_.Items().GetAt(static_cast<uint32_t>(index));
+            }
             seek_pending_ = true;
             seek_position_ = position;
             seek_arm_cic_seen_ = false;
+            // CurrentItemChanged fires as soon as MoveTo switches items and
+            // broadcasts a zero position for the fresh item; keep Broadcast()
+            // reporting the requested position until the seek lands. The
+            // application itself happens when the switch settles: for a fresh
+            // item MediaOpened fires and Opened() applies the position, and
+            // for an item that is still open in the keep-open window
+            // (MediaOpened never fires there) CurrentItemChanged applies it
+            // via ApplyDeferredSeekIfReady. Applying inline here instead
+            // would race the switch: the session can still be describing the
+            // previous item.
             BeginSeek(position);
+            list_.MoveTo(static_cast<uint32_t>(index));
           } else {
-            BeginSeek(position);
-            player_.PlaybackSession().Position(MicrosToTimeSpan(position));
+            if (index >= 0) requested_index_ = index;
+            // A seek issued while the item is still opening would be overwritten
+            // by Opened() applying the load's deferred initial position, so arm
+            // the deferred seek with the newest position instead of letting the
+            // stale one land when the media opens. The direct Position() set is
+            // skipped in that window: the pipeline discards it before the open,
+            // and Opened() applies the deferred target once the item is open.
+            if (loading_ || seek_pending_) {
+              seek_pending_ = true;
+              seek_position_ = position;
+              // Preserve seek_arm_cic_seen_ on a same-item/unindexed seek: if
+              // CurrentItemChanged already fired for this item, resetting it to
+              // false would prevent Broadcast() from ever retrying the seek.
+              BeginSeek(position);
+            } else {
+              BeginSeek(position);
+              player_.PlaybackSession().Position(MicrosToTimeSpan(position));
+            }
           }
+        } catch (...) {
+          completed_ = prev_completed;
+          requested_index_ = prev_requested;
+          seek_pending_ = prev_seek_pending;
+          seek_position_ = prev_seek_position;
+          seek_arm_cic_seen_ = prev_seek_arm_cic;
+          seek_in_progress_ = prev_seek_in_progress;
+          target_seek_position_ = prev_target_seek_pos;
+          pending_item_ = prev_pending_item;
+          throw;
         }
-        if (playing_) player_.Play();
+        if (playing_) { try { player_.Play(); } catch (...) {} }
       } else if (method == "concatenatingInsertAll" || method == "concatenatingRemoveRange" || method == "concatenatingMove") {
         Mutate(method, *args);
       } else if (method == "setAndroidAudioAttributes") {
         // just_audio sends this during platform initialization on every OS.
       } else if (method == "setAutomaticallyWaitsToMinimizeStalling" ||
                  method == "setCanUseNetworkResourcesForLiveStreamingWhilePaused" ||
-                 method == "setPreferredPeakBitRate") {
+                 method == "setPreferredPeakBitRate" ||
+                 method == "setAllowsExternalPlayback") {
         // AVPlayer (iOS) knobs exposed on AudioPlayer's cross-platform API.
         // just_audio sends them over the channel whenever the app calls the
         // setter (or activation finds a non-default value), so answering
@@ -1019,7 +1255,24 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
         // public API. They have no Windows counterpart; accept as a no-op,
         // exactly as the previous implementation did.
       } else if (method == "dispose") {
-        Dispose();
+        // Defer channel unregistration and plugin removal past the active
+        // BinaryMessageHandler invocation so we do not erase this closure from
+        // BinaryMessengerImpl::handlers_ while it is still on the call stack.
+        Dispose(/*unregister_channel=*/false);
+        result->Success(EncodableMap());
+        if (dispatcher_) {
+          std::weak_ptr<AudioPlayer> weak = weak_from_this();
+          auto on_disposed = std::move(on_disposed_);
+          try {
+            dispatcher_->Post([weak, on_disposed = std::move(on_disposed)] {
+              if (auto player = weak.lock()) {
+                player->UnregisterPlayerChannel();
+              }
+              if (on_disposed) on_disposed();
+            });
+          } catch (...) {}
+        }
+        return;
       } else {
         return result->NotImplemented();
       }
@@ -1029,8 +1282,10 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       if (result) result->Error("argument_error", error.message);
       else Fail(error.message);
     } catch (const winrt::hresult_error& error) {
-      if (result) result->Error("native_error", winrt::to_string(error.message()));
-      else Fail(winrt::to_string(error.message()));
+      const auto message = FormatWinRtPlaybackError(
+          "", error.code().value, winrt::to_string(error.message()));
+      if (result) result->Error("native_error", message);
+      else Fail(message);
     } catch (const std::exception& error) {
       if (result) result->Error("native_error", error.what());
       else Fail(error.what());
@@ -1042,9 +1297,8 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
 
   int ProcessingState() const {
     if (failed_ || !source_set_) return 0;
-    if (completed_) return 4;
+    if (completed_ || leaves_.empty()) return 4;
     if (loading_) return 1;
-    if (leaves_.empty()) return 3;
     auto state = player_.PlaybackSession().PlaybackState();
     if (state == Playback::MediaPlaybackState::Opening) return 1;
     if (state == Playback::MediaPlaybackState::Buffering) return 2;
@@ -1072,7 +1326,9 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
     int64_t duration = 0;
     int64_t position = 0;
     double progress = 0.0;
-    try { duration = TimeSpanToMicroseconds(session.NaturalDuration()); } catch (...) {}
+    try {
+      duration = NormalizeDurationMicroseconds(session.NaturalDuration().count());
+    } catch (...) {}
     try { position = TimeSpanToMicroseconds(session.Position()); } catch (...) {}
     try { progress = session.DownloadProgress(); } catch (...) {}
     if (seek_in_progress_) {
@@ -1131,7 +1387,7 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       const auto& leaf = leaves_[index];
       const auto& source = jaw::Require<std::string>(leaf, "type") == "clipping" ? jaw::Require<EncodableMap>(leaf, "child") : leaf;
       const auto& uri = jaw::Require<std::string>(source, "uri");
-      if (uri.compare(0, 5, "file:") == 0) progress = 1.0;
+      if (StartsWithIgnoreCase(uri, "file:")) progress = 1.0;
     }
     int64_t reportedIndex = -1;
     if (loading_) reportedIndex = static_cast<int64_t>(requested_index_);
@@ -1157,12 +1413,19 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       event[EncodableValue("errorCode")] = EncodableValue(int32_t{1});
       event[EncodableValue("errorMessage")] = EncodableValue(error);
     }
-    if (event_sink_ && event_sink_->Success(event)) {
-      // A delivered state event ends any delivery-failure epoch: the next
-      // failure gets a fresh recovery budget instead of an exhausted one.
+    bool event_failed = false;
+    bool event_delivered = false;
+    if (event_sink_) {
+      event_delivered = event_sink_->Success(event, &event_failed);
+    }
+    bool data_failed = false;
+    PublishData(force_data, &data_failed);
+    if (event_delivered && !event_failed && !data_failed) {
+      // A clean delivery round across both sinks resets any failure epoch; if
+      // data_sink_ failed while event_sink_ succeeded, kMaxRecoveryAttempts
+      // continues counting so sustained data_sink_ failures cannot loop forever.
       recovery_attempts_.store(0);
     }
-    PublishData(force_data);
   }
 
   // The player-data map is the player's *intent*, not a progress report: it
@@ -1174,7 +1437,8 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
   // Crucially, published_data_ is committed only after successful delivery to
   // the sink. If delivery fails or is retried/recovered, the state can be
   // re-delivered or forced without being trapped behind a stale cache.
-  void PublishData(bool force = false) {
+  bool PublishData(bool force = false, bool* delivery_failed = nullptr) {
+    if (delivery_failed) *delivery_failed = false;
     EncodableMap data{
       {EncodableValue("playing"), EncodableValue(playing_)},
       {EncodableValue("volume"), EncodableValue(volume_)},
@@ -1182,11 +1446,13 @@ class AudioPlayer : public std::enable_shared_from_this<AudioPlayer> {
       {EncodableValue("loopMode"), EncodableValue(loop_mode_)},
       {EncodableValue("shuffleMode"), EncodableValue(shuffle_mode_)}
     };
-    if (!force && data == published_data_) return;
+    if (!force && data == published_data_) return true;
     if (data_sink_) {
-      if (data_sink_->Success(data)) {
+      if (data_sink_->Success(data, delivery_failed)) {
         published_data_ = std::move(data);
+        return true;
       }
     }
+    return false;
   }
 };

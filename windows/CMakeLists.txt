@@ -26,6 +26,7 @@ add_library(${PLUGIN_NAME} SHARED
   "uri_utils.hpp"
 )
 apply_standard_settings(${PLUGIN_NAME})
+target_compile_features(${PLUGIN_NAME} PRIVATE cxx_std_20)
 set_target_properties(${PLUGIN_NAME} PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
@@ -71,6 +72,7 @@ if (include_just_audio_windows_plus_tests)
     test/player_utils_test.cpp
   )
   apply_standard_settings(${TEST_RUNNER})
+  target_compile_features(${TEST_RUNNER} PRIVATE cxx_std_20)
   # source_model.hpp includes flutter/encodable_value.h, which lives in the
   # cpp_client_wrapper include directory owned by the wrapper target, not the
   # `flutter` target, so both INTERFACE_INCLUDE_DIRECTORIES are needed. The

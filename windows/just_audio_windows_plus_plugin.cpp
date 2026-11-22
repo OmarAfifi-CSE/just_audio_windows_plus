@@ -23,17 +23,50 @@ using flutter::EncodableValue;
 
 namespace {
 
+class MessengerHandle {
+ public:
+  explicit MessengerHandle(FlutterDesktopMessengerRef messenger)
+      : messenger_(messenger ? FlutterDesktopMessengerAddRef(messenger)
+                             : nullptr) {}
+  ~MessengerHandle() {
+    if (messenger_) {
+      FlutterDesktopMessengerRelease(messenger_);
+    }
+  }
+  MessengerHandle(const MessengerHandle&) = delete;
+  MessengerHandle& operator=(const MessengerHandle&) = delete;
+
+  // All callers run on Flutter's platform thread (same thread as engine
+  // teardown), so holding FlutterDesktopMessengerLock across SetMessageHandler
+  // or Send is unnecessary and would risk lock inversion with the wrapper.
+  bool IsAvailable() const {
+    if (!messenger_) return true;
+    FlutterDesktopMessengerLock(messenger_);
+    const bool available = FlutterDesktopMessengerIsAvailable(messenger_);
+    FlutterDesktopMessengerUnlock(messenger_);
+    return available;
+  }
+
+ private:
+  FlutterDesktopMessengerRef messenger_ = nullptr;
+};
+
 class JustAudioWindowsPlusPlugin : public flutter::Plugin {
  public:
-  static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
+  static void RegisterWithRegistrar(
+      flutter::PluginRegistrarWindows *registrar,
+      FlutterDesktopMessengerRef raw_messenger = nullptr);
 
-  JustAudioWindowsPlusPlugin();
+  explicit JustAudioWindowsPlusPlugin(
+      std::function<bool()> is_messenger_available = {});
 
   virtual ~JustAudioWindowsPlusPlugin();
 
  private:
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
   std::vector<std::shared_ptr<AudioPlayer>> players_;
   std::shared_ptr<PlatformThreadDispatcher> dispatcher_;
+  std::function<bool()> is_messenger_available_;
   std::unique_ptr<flutter::MethodChannel<EncodableValue>> channel_;
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue> &method_call,
@@ -45,13 +78,19 @@ class JustAudioWindowsPlusPlugin : public flutter::Plugin {
 
 // static
 void JustAudioWindowsPlusPlugin::RegisterWithRegistrar(
-    flutter::PluginRegistrarWindows *registrar) {
+    flutter::PluginRegistrarWindows *registrar,
+    FlutterDesktopMessengerRef raw_messenger) {
+  auto messenger_handle = std::make_shared<MessengerHandle>(raw_messenger);
+  auto is_messenger_available = [messenger_handle]() {
+    return messenger_handle->IsAvailable();
+  };
+
   auto channel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           registrar->messenger(), "com.ryanheise.just_audio.methods",
           &flutter::StandardMethodCodec::GetInstance());
 
-  auto plugin = std::make_unique<JustAudioWindowsPlusPlugin>();
+  auto plugin = std::make_unique<JustAudioWindowsPlusPlugin>(is_messenger_available);
 
   channel->SetMethodCallHandler(
       [plugin_pointer = plugin.get(), messenger_pointer = registrar->messenger()](const auto &call, auto result) {
@@ -62,11 +101,16 @@ void JustAudioWindowsPlusPlugin::RegisterWithRegistrar(
   registrar->AddPlugin(std::move(plugin));
 }
 
-JustAudioWindowsPlusPlugin::JustAudioWindowsPlusPlugin()
-    : dispatcher_(std::make_shared<PlatformThreadDispatcher>()) {}
+JustAudioWindowsPlusPlugin::JustAudioWindowsPlusPlugin(
+    std::function<bool()> is_messenger_available)
+    : dispatcher_(std::make_shared<PlatformThreadDispatcher>()),
+      is_messenger_available_(std::move(is_messenger_available)) {}
 
 JustAudioWindowsPlusPlugin::~JustAudioWindowsPlusPlugin() {
-  if (channel_) channel_->SetMethodCallHandler(nullptr);
+  alive_.reset();
+  const bool messenger_ok =
+      !is_messenger_available_ || is_messenger_available_();
+  if (channel_ && messenger_ok) channel_->SetMethodCallHandler(nullptr);
   for (auto& player : players_) player->Dispose();
   players_.clear();
   dispatcher_->Shutdown();
@@ -92,12 +136,22 @@ void JustAudioWindowsPlusPlugin::HandleMethodCall(
     DisposePlayerByPlayerId(*id);
 
     try {
-      auto player = std::make_shared<AudioPlayer>(*id, messenger, dispatcher_);
+      std::weak_ptr<bool> plugin_alive = alive_;
+      const std::string player_id = *id;
+      auto player = std::make_shared<AudioPlayer>(
+          player_id, messenger, dispatcher_, is_messenger_available_,
+          [this, plugin_alive, player_id]() {
+            if (plugin_alive.expired()) return;
+            DisposePlayerByPlayerId(player_id);
+          });
       player->Initialize();
       players_.push_back(std::move(player));
       result->Success(flutter::EncodableMap());
     } catch (const winrt::hresult_error& error) {
-      return result->Error("init_error", winrt::to_string(error.message()));
+      return result->Error(
+          "init_error",
+          FormatWinRtPlaybackError("", error.code().value,
+                                   winrt::to_string(error.message())));
     } catch (const std::exception& error) {
       return result->Error("init_error", error.what());
     } catch (...) {
@@ -135,5 +189,6 @@ void JustAudioWindowsPlusPluginRegisterWithRegistrar(
     FlutterDesktopPluginRegistrarRef registrar) {
   JustAudioWindowsPlusPlugin::RegisterWithRegistrar(
       flutter::PluginRegistrarManager::GetInstance()
-          ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));
+          ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar),
+      FlutterDesktopPluginRegistrarGetMessenger(registrar));
 }

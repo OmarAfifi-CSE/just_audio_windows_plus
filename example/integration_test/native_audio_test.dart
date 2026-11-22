@@ -1301,6 +1301,250 @@ Future<void> main() async {
     require(p.processingState == ProcessingState.completed,
         'engine unusable after disposal stress');
   });
+  await scenario('just_audio proxy delivers custom headers and userAgent on Windows',
+      () async {
+    String? seenAuth;
+    String? seenCustom;
+    String? seenAgent;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      seenAuth = request.headers.value('authorization');
+      seenCustom = request.headers.value('x-custom-test');
+      seenAgent = request.headers.value(HttpHeaders.userAgentHeader);
+      final bytes = _longWav.readAsBytesSync();
+      request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+      request.response.headers.contentType = ContentType('audio', 'wav');
+      final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
+      final match = rangeHeader == null
+          ? null
+          : RegExp(r'^bytes=(\d+)-(\d*)$').firstMatch(rangeHeader);
+      if (match != null) {
+        final start = int.parse(match.group(1)!);
+        final endRaw = match.group(2);
+        final end = (endRaw == null || endRaw.isEmpty)
+            ? bytes.length - 1
+            : int.parse(endRaw).clamp(start, bytes.length - 1);
+        final slice = bytes.sublist(start, end + 1);
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+            HttpHeaders.contentRangeHeader, 'bytes $start-$end/${bytes.length}');
+        request.response.contentLength = slice.length;
+        request.response.add(slice);
+      } else {
+        request.response.contentLength = bytes.length;
+        request.response.add(bytes);
+      }
+      await request.response.close();
+    });
+    final p = AudioPlayer(userAgent: 'JAWTestAgent/1.0');
+    _players.add(p);
+    await p.setVolume(0);
+    try {
+      final loadedDuration = await p.setAudioSource(
+        AudioSource.uri(
+          Uri.parse('http://127.0.0.1:${server.port}/protected.wav'),
+          headers: <String, String>{
+            'Authorization': 'Bearer demo-secret',
+            'X-Custom-Test': 'ok',
+          },
+        ),
+      );
+      require(loadedDuration == const Duration(seconds: 3),
+          'Expected 3s duration via proxy, got $loadedDuration');
+      unawaited(p.play());
+      await eventually(() => p.position > const Duration(milliseconds: 50),
+          'proxied playback did not advance');
+      require(seenAuth == 'Bearer demo-secret',
+          'Missing Authorization header at origin: $seenAuth');
+      require(
+          seenCustom == 'ok', 'Missing custom header at origin: $seenCustom');
+      require(seenAgent == 'JAWTestAgent/1.0',
+          'Missing User-Agent header at origin: $seenAgent');
+    } finally {
+      await server.close(force: true);
+    }
+  });
+  await scenario(
+      'non-ASCII local file paths and reserved filename characters play cleanly',
+      () async {
+    final wavBytes = _shortWav.readAsBytesSync();
+    final samples = <File>[
+      File('${_artifacts.path}/Đọc diễn cảm/track #1 [100%].wav'),
+      File('${_artifacts.path}/تلاوات قرآنية/مقطع صوتي #2 %.wav'),
+      File('${_artifacts.path}/Đọc diễn cảm/{clip}^`1 [100%] #3 %.wav'),
+    ];
+    for (final file in samples) {
+      file.parent.createSync(recursive: true);
+      file.writeAsBytesSync(wavBytes);
+      final p = await newPlayer();
+      final duration = await p.setFilePath(file.path);
+      require(duration == const Duration(milliseconds: 400),
+          'Wrong duration for ${file.path}: $duration');
+      await p.play().timeout(const Duration(seconds: 5));
+      require(p.processingState == ProcessingState.completed,
+          'Playback did not finish for ${file.path}');
+    }
+  });
+  await scenario(
+      'multiple ClippingAudioSource items on one file and open-ended clip',
+      () async {
+    final p = await newPlayer();
+    await p.setAudioSources(<AudioSource>[
+      ClippingAudioSource(
+        child: AudioSource.file(_sixWav.path),
+        start: Duration.zero,
+        end: const Duration(seconds: 1),
+      ),
+      ClippingAudioSource(
+        child: AudioSource.file(_sixWav.path),
+        start: const Duration(seconds: 2),
+        end: const Duration(seconds: 3),
+      ),
+    ]);
+    require(p.duration == const Duration(seconds: 1),
+        'Expected 1s first clip duration, got ${p.duration}');
+    await p.play().timeout(const Duration(seconds: 8));
+    require(p.processingState == ProcessingState.completed,
+        'multi-clip playlist did not finish');
+    require(p.currentIndex == 1,
+        'multi-clip playlist stopped on index ${p.currentIndex}');
+
+    final openEnded = await newPlayer();
+    final tailDuration = await openEnded.setAudioSource(
+      ClippingAudioSource(
+        child: AudioSource.file(_sixWav.path),
+        start: const Duration(seconds: 4),
+      ),
+    );
+    require(tailDuration == const Duration(seconds: 2),
+        'Expected 2s open-ended clip duration, got $tailDuration');
+    await openEnded.play().timeout(const Duration(seconds: 6));
+    require(openEnded.processingState == ProcessingState.completed,
+        'open-ended clip did not complete');
+  });
+  await scenario('playback speed 0.25x and 3.0x persist across track switches',
+      () async {
+    final p = await newPlayer();
+    await p.setAudioSources(<AudioSource>[
+      AudioSource.file(_shortWav.path),
+      AudioSource.file(_longWav.path),
+    ]);
+    await p.setSpeed(0.25);
+    require(p.speed == 0.25, '0.25x speed failed: ${p.speed}');
+    await p.setSpeed(3.0);
+    require(p.speed == 3.0, '3.0x speed failed: ${p.speed}');
+    unawaited(p.play());
+    await eventually(() => p.currentIndex == 1,
+        '3.0x playlist did not advance to second track');
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    require(p.speed == 3.0,
+        'Speed reverted after track switch: expected 3.0, got ${p.speed}');
+    await p.pause();
+  });
+  await scenario('clearAudioSources during playback stops audio cleanly',
+      () async {
+    final p = await newPlayer();
+    await p.setFilePath(_longWav.path);
+    unawaited(p.play());
+    await eventually(() => p.position > const Duration(milliseconds: 80),
+        'playback did not start before clearAudioSources');
+    await p.clearAudioSources();
+    require(p.sequence.isEmpty,
+        'sequence not empty after clearAudioSources: ${p.sequence.length}');
+    require(p.processingState == ProcessingState.completed,
+        'expected completed after clearAudioSources, got ${p.processingState}');
+    final stoppedPos = p.position;
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    require(p.position == stoppedPos,
+        'position kept moving after clearAudioSources: $stoppedPos -> ${p.position}');
+    await p.setFilePath(_shortWav.path);
+    await eventually(() => p.processingState == ProcessingState.completed,
+        'player could not reload and play to completion after clearAudioSources');
+    await p.pause();
+  });
+  await scenario('setAllowsExternalPlayback succeeds without MissingPluginException',
+      () async {
+    final p = await newPlayer();
+    await p.setAllowsExternalPlayback(true);
+    await p.setAllowsExternalPlayback(false);
+  });
+  await scenario('unsupported native format reports structured diagnostic message',
+      () async {
+    final badMp3 = File('${_artifacts.path}/corrupt.mp3')
+      ..writeAsBytesSync(
+          Uint8List.fromList(List<int>.generate(512, (i) => (i * 73) & 0xff)));
+    final p = await newPlayer();
+    Object? failure;
+    try {
+      await p.setFilePath(badMp3.path).timeout(const Duration(seconds: 5));
+    } catch (error) {
+      failure = error;
+    }
+    require(failure is PlayerException, 'Expected PlayerException, got $failure');
+    final ex = failure as PlayerException;
+    require(ex.code == 1, 'Expected code 1, got ${ex.code}');
+    final msg = ex.message ?? '';
+    require(msg.contains('0x'),
+        'Expected hex HRESULT in diagnostic message, got: $msg');
+  });
+  await scenario(
+      'clearAudioSources then addAudioSource re-attaches and plays cleanly',
+      () async {
+    final p = await newPlayer();
+    await p.setFilePath(_longWav.path);
+    unawaited(p.play());
+    await eventually(() => p.position > const Duration(milliseconds: 80),
+        'playback did not start before clearAudioSources');
+    await p.clearAudioSources();
+    require(p.sequence.isEmpty,
+        'sequence not empty after clearAudioSources: ${p.sequence.length}');
+    require(p.processingState == ProcessingState.completed,
+        'expected completed after clearAudioSources, got ${p.processingState}');
+    await p.addAudioSource(AudioSource.file(_shortWav.path));
+    await eventually(() => p.processingState == ProcessingState.completed,
+        'inserted item after clearAudioSources never completed');
+    await p.pause();
+  });
+  await scenario(
+      'completed playlist stays completed and does not extrapolate position',
+      () async {
+    final p = await newPlayer();
+    await p.setLoopMode(LoopMode.off);
+    await p.setAudioSources(<AudioSource>[
+      AudioSource.file(_shortWav.path),
+      AudioSource.file(_shortWav.path),
+    ]);
+    await p.play().timeout(const Duration(seconds: 6));
+    require(p.processingState == ProcessingState.completed,
+        'expected completed state after playlist EOF, got ${p.processingState}');
+    final endPos = p.position;
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    require(p.processingState == ProcessingState.completed,
+        'completed state reverted to ${p.processingState}');
+    require(p.position == endPos,
+        'position extrapolated after playlist EOF: $endPos -> ${p.position}');
+  });
+  await scenario(
+      'rapid cross-item scrub back to index 0 lands on index 0',
+      () async {
+    final p = await newPlayer();
+    await p.setAudioSources(<AudioSource>[
+      AudioSource.file(_sixWav.path),
+      AudioSource.file(_sixWav.path),
+      AudioSource.file(_sixWav.path),
+    ]);
+    unawaited(p.play());
+    await eventually(() => p.position > const Duration(milliseconds: 50),
+        'playback did not start before rapid scrub');
+    unawaited(p.seek(const Duration(milliseconds: 500), index: 1));
+    await p.seek(const Duration(milliseconds: 1500), index: 0);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    require(p.currentIndex == 0,
+        'expected index 0 after rapid cross-item scrub, got ${p.currentIndex}');
+    require(p.position >= const Duration(milliseconds: 1400),
+        'expected position >= 1400ms on index 0, got ${p.position}');
+    await p.pause();
+  });
   watchdog.cancel();
   _save();
   exit(_results.every((r) => r['passed'] == true) ? 0 : 1);

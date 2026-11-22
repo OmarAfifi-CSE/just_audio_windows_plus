@@ -121,9 +121,6 @@ class _SourceNode {
 
   static int integer(Object? value, String key) {
     if (value is int) return value;
-    if (value is double && value.isFinite && value == value.roundToDouble()) {
-      return value.toInt();
-    }
     _argumentError('Missing $key');
   }
 
@@ -148,6 +145,54 @@ class _SourceNode {
       order.add(index);
     }
     return order;
+  }
+
+  static bool _isLoopbackHttpUri(String uri) {
+    if (uri.length < 7 || uri.substring(0, 7).toLowerCase() != 'http://') {
+      return false;
+    }
+    final rest = uri.substring(7);
+    final end = rest.indexOf(RegExp(r'[/\?#]'));
+    final authority = end == -1 ? rest : rest.substring(0, end);
+    if (authority.isEmpty || authority.contains('@')) return false;
+
+    late final String host;
+    late final String port;
+    var hasPort = false;
+    if (authority.startsWith('[')) {
+      final close = authority.indexOf(']');
+      if (close == -1) return false;
+      host = authority.substring(0, close + 1);
+      if (close + 1 < authority.length) {
+        if (authority[close + 1] != ':') return false;
+        hasPort = true;
+        port = authority.substring(close + 2);
+      } else {
+        port = '';
+      }
+    } else {
+      final colon = authority.indexOf(':');
+      if (colon != -1) {
+        hasPort = true;
+        host = authority.substring(0, colon);
+        port = authority.substring(colon + 1);
+      } else {
+        host = authority;
+        port = '';
+      }
+    }
+
+    if (hasPort) {
+      if (port.isEmpty || port.length > 5 || !RegExp(r'^\d+$').hasMatch(port)) {
+        return false;
+      }
+      final portNum = int.parse(port);
+      if (portNum < 1 || portNum > 65535) return false;
+    }
+    final lowerHost = host.toLowerCase();
+    return lowerHost == '127.0.0.1' ||
+        lowerHost == '[::1]' ||
+        lowerHost == 'localhost';
   }
 
   static _SourceNode parse(Map<String, dynamic> data, [int depth = 0]) {
@@ -220,9 +265,9 @@ class _SourceNode {
         final headers = data['headers'];
         if (headers != null) {
           if (headers is! Map) _argumentError('headers must be a map');
-          if (headers.isNotEmpty) {
+          if (headers.isNotEmpty && !_isLoopbackHttpUri(uri)) {
             _argumentError(
-              "Direct HTTP headers are unsupported; use just_audio's proxy",
+              "Direct HTTP headers on non-loopback URIs are unsupported; use just_audio's proxy",
             );
           }
         }
@@ -297,6 +342,28 @@ class _SourceNode {
     }
     return null;
   }
+
+  void validateDepth([int depth = 0]) {
+    if (depth > maxDepth) _argumentError('Audio source nesting is too deep');
+    if (type == 'clipping' && depth == maxDepth) {
+      _argumentError('Audio source nesting is too deep');
+    }
+    for (final child in children) {
+      child.validateDepth(depth + 1);
+    }
+  }
+
+  void updateShuffle(_SourceNode other) {
+    if (id != other.id ||
+        type != other.type ||
+        children.length != other.children.length) {
+      _argumentError('Shuffle source does not match loaded tree');
+    }
+    shuffle = other.shuffle;
+    for (var i = 0; i < children.length; i++) {
+      children[i].updateShuffle(other.children[i]);
+    }
+  }
 }
 
 /// Mirrors the `AudioPlayer` state machine in `windows/player.hpp`.
@@ -363,7 +430,7 @@ class MockPlayerInstance {
   /// Mirrors `ProcessingState()`.
   int get processingState {
     if (failed || !sourceSet) return 0;
-    if (completed) return 4;
+    if (completed || leaves.isEmpty) return 4;
     if (loading) return 1;
     return 3;
   }
@@ -375,7 +442,7 @@ class MockPlayerInstance {
     final leaf = leaves[index];
     final source = leaf['type'] == 'clipping' ? leaf['child'] : leaf;
     final uri = source is Map ? source['uri'] as String? : null;
-    return uri != null && uri.startsWith('file:') ? 1.0 : 0.0;
+    return uri != null && uri.toLowerCase().startsWith('file:') ? 1.0 : 0.0;
   }
 
   /// Mirrors the state map published by `Broadcast()`.
@@ -526,11 +593,11 @@ class MockPlayerInstance {
     sourceSet = true;
     loading = leaves.isNotEmpty;
     failed = false;
-    completed = false;
-    // Mirrors native Load(): ClearSeek() leaves no in-flight seek, and the
-    // initial position is armed as a deferred seek consumed by the open.
+    completed = leaves.isEmpty;
+    // Mirrors native Load(): ClearSeek() leaves no in-flight seek, and an
+    // initial position > 0 is armed as a deferred seek consumed by the open.
     seekInProgress = false;
-    seekPending = leaves.isNotEmpty;
+    seekPending = leaves.isNotEmpty && position > 0;
     requestedIndex = index;
     positionUs = position;
     currentIndex = leaves.isEmpty ? -1 : index;
@@ -607,6 +674,7 @@ class MockPlayerInstance {
         _SourceNode.permutation(args['shuffleOrder'], target.children.length);
     // Re-runs the size and depth validation the native side performs.
     target.size;
+    _tree.validateDepth();
 
     // The identity of the playing item before the re-flatten. Tree children
     // keep their map instances, so an identical reference means the item
@@ -615,9 +683,15 @@ class MockPlayerInstance {
     final oldLeaf =
         oldIndex >= 0 && oldIndex < leaves.length ? leaves[oldIndex] : null;
 
+    final wasEmpty = leaves.isEmpty;
     leaves
       ..clear()
       ..addAll(_flattenTo(_tree));
+    if (wasEmpty && leaves.isNotEmpty) {
+      completed = false;
+      currentIndex = 0;
+      durationUs = durationOf(leaves[0]);
+    }
     if (oldLeaf != null) {
       var survived = leaves.indexOf(oldLeaf);
       if (survived >= 0) {
@@ -637,6 +711,11 @@ class MockPlayerInstance {
       currentIndex = -1;
     }
     if (leaves.isEmpty) {
+      loading = false;
+      seekInProgress = false;
+      seekPending = false;
+      positionUs = 0;
+      durationUs = 0;
       completed = true;
       completePlay();
     }
@@ -772,7 +851,7 @@ class MockAudioEngine {
         if (player.failed || (player.sourceSet && player.leaves.isEmpty)) {
           player.completePlay();
         }
-        player.completed = false;
+        player.completed = player.leaves.isEmpty;
         player.broadcastState();
         if (myPlay != null) await myPlay.future;
         return <String, dynamic>{};
@@ -889,10 +968,7 @@ class MockAudioEngine {
         final raw = args['audioSource'];
         if (raw is! Map) _argumentError('Missing or invalid audioSource');
         final other = _SourceNode.parse(Map<String, dynamic>.from(raw));
-        if (other.id != player._tree.id || other.type != player._tree.type) {
-          _argumentError('Shuffle source does not match loaded tree');
-        }
-        player._tree.shuffle = other.shuffle;
+        player._tree.updateShuffle(other);
         return <String, dynamic>{};
 
       case 'concatenatingInsertAll':
@@ -909,6 +985,7 @@ class MockAudioEngine {
       case 'setAutomaticallyWaitsToMinimizeStalling':
       case 'setCanUseNetworkResourcesForLiveStreamingWhilePaused':
       case 'setPreferredPeakBitRate':
+      case 'setAllowsExternalPlayback':
         // AVPlayer (iOS) knobs on AudioPlayer's cross-platform API. just_audio
         // sends them whenever the app calls the setter, so the platform must
         // accept them; they have no Windows counterpart.

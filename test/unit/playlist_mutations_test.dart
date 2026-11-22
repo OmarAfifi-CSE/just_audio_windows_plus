@@ -389,6 +389,36 @@ void main() {
       await removeRange(0, 3, <int>[]);
       expect(player.leaves, isEmpty);
       expect(player.completed, isTrue);
+      expect(player.loading, isFalse);
+      expect(player.seekInProgress, isFalse);
+      expect(player.seekPending, isFalse);
+      expect(player.positionUs, 0);
+      expect(player.durationUs, 0);
+      expect(player.processingState, 4);
+
+      // Even if playing intent remains true on an empty playlist, state stays
+      // completed (4) rather than ready (3) so just_audio does not extrapolate.
+      await channel.invokeMethod<void>('play', <String, dynamic>{});
+      expect(player.completed, isTrue);
+      expect(player.processingState, 4);
+    });
+
+    test('insert rejects nesting depth beyond maxDepth in loaded tree',
+        () async {
+      Map<String, dynamic> nested =
+          progressiveSource('deep', 'file:///audio/deep.mp3');
+      for (var i = 0; i < 64; i++) {
+        nested = <String, dynamic>{
+          'id': 'loop_$i',
+          'type': 'looping',
+          'count': 1,
+          'child': nested,
+        };
+      }
+      await expectLater(
+        insert(0, <Map<String, dynamic>>[nested], <int>[0, 1, 2, 3]),
+        argumentError,
+      );
     });
   });
 }

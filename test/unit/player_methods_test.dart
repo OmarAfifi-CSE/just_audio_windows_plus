@@ -185,22 +185,50 @@ void main() {
       );
     });
 
-    test('rejects direct request headers and points at the proxy', () async {
-      await expectLater(
-        channel.invokeMethod<void>('load', {
+    test('rejects direct request headers on external URIs and points at the proxy',
+        () async {
+      for (final badUri in <String>[
+        'https://host/a.mp3',
+        'http://127.0.0.1.evil.com/a.mp3',
+        'http://127.0.0.1@evil.com/a.mp3',
+        'http://127.0.0.1:0/a.mp3',
+        'http://localhost:65536/a.mp3',
+        'http://127.0.0.1:/a.mp3',
+      ]) {
+        await expectLater(
+          channel.invokeMethod<void>('load', {
+            'audioSource': <String, dynamic>{
+              'id': 'a',
+              'type': 'progressive',
+              'uri': badUri,
+              'headers': <String, dynamic>{'Authorization': 'Bearer x'},
+            },
+          }),
+          throwsA(isA<PlatformException>().having(
+            (e) => e.message,
+            'message',
+            contains('proxy'),
+          )),
+        );
+      }
+    });
+
+    test('accepts request headers on loopback proxy URIs', () async {
+      for (final entry in <(String, String)>[
+        ('progressive', 'http://127.0.0.1:54321/a.mp3'),
+        ('hls', 'http://localhost:8080/playlist.m3u8'),
+        ('dash', 'http://[::1]:9000/manifest.mpd'),
+      ]) {
+        await channel.invokeMethod<void>('load', {
           'audioSource': <String, dynamic>{
             'id': 'a',
-            'type': 'progressive',
-            'uri': 'https://host/a.mp3',
+            'type': entry.$1,
+            'uri': entry.$2,
             'headers': <String, dynamic>{'Authorization': 'Bearer x'},
           },
-        }),
-        throwsA(isA<PlatformException>().having(
-          (e) => e.message,
-          'message',
-          contains('proxy'),
-        )),
-      );
+        });
+        expect(player.sourceSet, isTrue);
+      }
     });
 
     test('rejects a concatenating source whose shuffleOrder is not a permutation',
@@ -479,7 +507,7 @@ void main() {
     });
 
     test('setSpeed accepts positive rates', () async {
-      for (final speed in <double>[0.5, 0.75, 1.0, 1.25, 1.5, 2.0]) {
+      for (final speed in <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]) {
         await channel.invokeMethod<void>('setSpeed', <String, dynamic>{'speed': speed});
         expect(player.speed, speed);
       }
@@ -617,7 +645,20 @@ void main() {
     test('setShuffleOrder rejects a tree that does not match the loaded one',
         () async {
       await channel.invokeMethod<void>('load', {
-        'audioSource': threeTrackPlaylist(),
+        'audioSource': concatenatingSource(
+          'root',
+          <Map<String, dynamic>>[
+            concatenatingSource(
+              'inner',
+              <Map<String, dynamic>>[
+                progressiveSource('a', 'file:///audio/0.mp3'),
+                progressiveSource('b', 'file:///audio/1.mp3'),
+              ],
+              <int>[0, 1],
+            ),
+          ],
+          <int>[0],
+        ),
       });
       await expectLater(
         channel.invokeMethod<void>('setShuffleOrder', {
@@ -625,6 +666,25 @@ void main() {
             'different',
             <Map<String, dynamic>>[
               progressiveSource('a', 'file:///audio/0.mp3'),
+            ],
+            <int>[0],
+          ),
+        }),
+        argumentError,
+      );
+      await expectLater(
+        channel.invokeMethod<void>('setShuffleOrder', {
+          'audioSource': concatenatingSource(
+            'root',
+            <Map<String, dynamic>>[
+              concatenatingSource(
+                'wrong_inner',
+                <Map<String, dynamic>>[
+                  progressiveSource('a', 'file:///audio/0.mp3'),
+                  progressiveSource('b', 'file:///audio/1.mp3'),
+                ],
+                <int>[1, 0],
+              ),
             ],
             <int>[0],
           ),
@@ -648,6 +708,7 @@ void main() {
         'setAutomaticallyWaitsToMinimizeStalling',
         'setCanUseNetworkResourcesForLiveStreamingWhilePaused',
         'setPreferredPeakBitRate',
+        'setAllowsExternalPlayback',
       ]) {
         await channel.invokeMethod<void>(method, <String, dynamic>{});
       }

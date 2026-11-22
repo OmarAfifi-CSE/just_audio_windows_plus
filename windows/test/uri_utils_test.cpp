@@ -236,8 +236,8 @@ TEST(PrepareNativeSourceUri, HandlesLocalAndUncFileSchemesAndPreservesHttp) {
       PrepareNativeSourceUri("file:///C:/stream?v=1#audio.m3u8"),
       "file:///C:/stream?v=1#audio.m3u8");
   EXPECT_EQ(
-      PrepareNativeSourceUri("file:///C:/%F0%9F%8E%B5%20song.wav"),
-      "file:///C:/🎵%20song.wav");
+      PrepareNativeSourceUri("file:///C:/%F0%9F%94%8A%20audio.wav"),
+      "file:///C:/🔊%20audio.wav");
 }
 
 TEST(IsLoopbackHttpUri, AcceptsOnlyStrictLoopbackHttpAuthorities) {

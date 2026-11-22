@@ -41,7 +41,7 @@ flutter test
 Pop-Location
 ```
 
-## 2. Real Windows playback regressions (52 scenarios)
+## 2. Real Windows playback regressions (59 scenarios)
 
 Builds the example with `integration_test/native_audio_test.dart` as its entry point, runs the scenarios against the actual compiled plugin on real platform channels, and records machine-readable results.
 
@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tool/test_windows.ps1 -Mode 
 powershell -NoProfile -ExecutionPolicy Bypass -File tool/test_windows.ps1 -Mode release
 ```
 
-The fixture is generated silent PCM WAV audio plus a loopback HTTP server, avoiding external media servers. The native playback entry point is a standalone Flutter application; run it through the Windows runner — ordinary `flutter test` does not exercise it against the Windows plugin.
+The fixtures use generated silent PCM WAV audio, self-contained MP3/M4A (AAC) and MPEG-TS/HLS `.m3u8` payloads, and a loopback HTTP server, avoiding external media servers. The native playback entry point is a standalone Flutter application; run it through the Windows runner — ordinary `flutter test` does not exercise it against the Windows plugin.
 
 A successful build alone is not a passing playback run. Inspect the runner exit status and its `results.json`; timeouts or missing results are failures. **Run both Debug and Release whenever you touch native event delivery, error handling, or lifecycle code.** Compiler configuration genuinely changes behaviour here: a defect that made a Release build resolve `await player.play()` without starting the media was invisible in Debug, because the slower build let the first event-channel snapshot reach Dart before the play request was dispatched. Re-run Release more than once when the change is in delivery timing; `tool/test_windows.ps1 -SkipBuild` makes a repeat run cheap.
 
@@ -72,6 +72,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tool/test_native.ps1
 
 ## Scope of evidence
 
-The playback suite targets loading success/failure, duration, play completion semantics, playing intent, playlist sequencing, shuffle-on and shuffle-off ordering, mode changes during playback, proxy HTTP headers/userAgent, non-ASCII and reserved-character local paths, multi-clip/open-ended clipping sources, speed persistence across item switches, `clearAudioSources()` teardown/reload, structured WinRT failure diagnostics, and lifecycle regressions using local files. Helper tests cover URI normalization/loopback checks, duration/diagnostic formatting, teardown messenger guards, source-tree logic, and the dispatcher's containment of a throwing task. Consult the test source for the exact assertions in a given revision.
+The playback suite targets loading success/failure, duration, play completion semantics, playing intent, playlist sequencing, shuffle-on and shuffle-off ordering, mode changes during playback, proxy HTTP headers/userAgent, non-ASCII and reserved-character local paths, multi-clip/open-ended clipping sources, speed persistence across item switches, `clearAudioSources()` and `stop()` teardown/reload, `seekToNext()`/`seekToPrevious()`, dynamic `setClip()`, real MP3 and M4A (AAC) playback, `StreamAudioSource`, `LockCachingAudioSource`, local HLS (`.m3u8`) direct and proxied playback, live unseekable chunked HTTP MP3 streams, structured WinRT failure diagnostics, and lifecycle regressions using local fixtures. Helper tests cover URI normalization/loopback checks, duration/diagnostic formatting, teardown messenger guards, source-tree logic, and the dispatcher's containment of a throwing task. Consult the test source for the exact assertions in a given revision.
 
-These checks do not establish universal codec support, sample-accurate or gapless playback, network/adaptive-stream compatibility, independent Flutter-engine isolation, leak freedom, or UI frame-rate performance. Disposal stress can detect observed failures but does not replace a memory diagnostic tool. Exercise the network sources, deployment environment, and concurrent-engine configurations your application actually uses.
+These checks do not establish universal codec support beyond tested WAV/MP3/M4A(AAC)/MPEG-TS streams, sample-accurate or gapless playback, external/DRM streaming compatibility, independent Flutter-engine isolation, leak freedom, or UI frame-rate performance. Disposal stress can detect observed failures but does not replace a memory diagnostic tool. Exercise the network sources, deployment environment, and concurrent-engine configurations your application actually uses.

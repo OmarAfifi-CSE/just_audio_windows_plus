@@ -3,10 +3,10 @@ import 'package:just_audio_windows_plus_example/main.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
-  testWidgets('AudioPlayerExample renders with ExcludeSemantics on sliders', (tester) async {
-    await tester.pumpWidget(const MaterialApp(
-      home: AudioPlayerExample(),
-    ));
+  testWidgets('AudioPlayerExample renders with ExcludeSemantics on sliders', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: AudioPlayerExample()));
 
     // Verify title and app bar
     expect(find.text('just_audio_windows_plus'), findsOneWidget);

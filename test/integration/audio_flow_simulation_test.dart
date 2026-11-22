@@ -26,24 +26,22 @@ void main() {
     final channel = player.methodChannel;
 
     final states = <int>[];
-    final subscription = player.eventChannel
-        .receiveBroadcastStream()
-        .listen((dynamic event) {
+    final subscription =
+        player.eventChannel.receiveBroadcastStream().listen((dynamic event) {
       states.add((event as Map<dynamic, dynamic>)['processingState'] as int);
     });
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
-    final load =
-        await channel.invokeMapMethod<String, dynamic>('load', <String, dynamic>{
+    final load = await channel
+        .invokeMapMethod<String, dynamic>('load', <String, dynamic>{
       'audioSource': threeTrackPlaylist('flow'),
     });
     expect(load!['duration'], 180000000);
     expect(player.sourceSet, isTrue);
 
     var playCompleted = false;
-    final play = channel
-        .invokeMethod<void>('play', <String, dynamic>{})
-        .then((_) => playCompleted = true);
+    final play = channel.invokeMethod<void>(
+        'play', <String, dynamic>{}).then((_) => playCompleted = true);
     expect(player.playing, isTrue);
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(playCompleted, isFalse);
@@ -73,9 +71,8 @@ void main() {
     });
 
     var playCompleted = false;
-    final play = channel
-        .invokeMethod<void>('play', <String, dynamic>{})
-        .then((_) => playCompleted = true);
+    final play = channel.invokeMethod<void>(
+        'play', <String, dynamic>{}).then((_) => playCompleted = true);
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(playCompleted, isFalse,
         reason: 'play must not resolve before the end of media');
@@ -89,7 +86,8 @@ void main() {
     expect(playCompleted, isTrue);
     expect(player.processingState, 4);
     expect(player.playing, isTrue,
-        reason: 'the playing intent survives completion, as just_audio expects');
+        reason:
+            'the playing intent survives completion, as just_audio expects');
 
     // Replaying from completed re-arms the lifecycle, and the replay's play
     // future stays bound to the replayed pass: it resolves when that pass
@@ -219,8 +217,8 @@ void main() {
       'audioSource': progressiveSource('b', 'file:///audio/b.mp3'),
     });
 
-    await MockAudioEngine.rootChannel
-        .invokeMethod<void>('disposePlayer', <String, dynamic>{'id': 'dispose_a'});
+    await MockAudioEngine.rootChannel.invokeMethod<void>(
+        'disposePlayer', <String, dynamic>{'id': 'dispose_a'});
     expect(a.isDisposed, isTrue);
     expect(b.isDisposed, isFalse);
 

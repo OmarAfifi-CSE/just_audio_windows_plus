@@ -38,7 +38,12 @@ const int _leafDurationUs = 180000000;
 // ---------------------------------------------------------------------------
 
 Map<String, dynamic> progressiveSource(String id, String uri) =>
-    <String, dynamic>{'id': id, 'type': 'progressive', 'uri': uri, 'headers': null};
+    <String, dynamic>{
+      'id': id,
+      'type': 'progressive',
+      'uri': uri,
+      'headers': null
+    };
 
 Map<String, dynamic> streamingSource(String id, String type, String uri) =>
     <String, dynamic>{'id': id, 'type': type, 'uri': uri, 'headers': null};
@@ -85,7 +90,8 @@ Map<String, dynamic> concatenatingSource(
     };
 
 /// A three-item concatenating playlist in natural order.
-Map<String, dynamic> threeTrackPlaylist([String id = 'root']) => concatenatingSource(
+Map<String, dynamic> threeTrackPlaylist([String id = 'root']) =>
+    concatenatingSource(
       id,
       <Map<String, dynamic>>[
         progressiveSource('$id-0', 'file:///audio/0.mp3'),
@@ -94,7 +100,6 @@ Map<String, dynamic> threeTrackPlaylist([String id = 'root']) => concatenatingSo
       ],
       <int>[0, 1, 2],
     );
-
 
 /// Mirrors `SourceNode::Parse`, `Size`, `Flatten` and `Order` from
 /// `windows/source_model.hpp`.
@@ -261,7 +266,9 @@ class _SourceNode {
       case 'hls':
       case 'dash':
         final uri = data['uri'];
-        if (uri is! String || uri.isEmpty) _argumentError('Source URI is empty');
+        if (uri is! String || uri.isEmpty) {
+          _argumentError('Source URI is empty');
+        }
         final headers = data['headers'];
         if (headers != null) {
           if (headers is! Map) _argumentError('headers must be a map');
@@ -378,9 +385,11 @@ class MockPlayerInstance {
   bool failed = false;
   bool completed = false;
   bool playing = false;
+
   /// Mirrors `seek_in_progress_`: the session still reports the pre-seek
   /// position until the media pipeline acknowledges the seek.
   bool seekInProgress = false;
+
   /// Mirrors `seek_pending_`: a seek queued for the item that is still opening.
   bool seekPending = false;
   double volume = 1.0;
@@ -392,8 +401,7 @@ class MockPlayerInstance {
   int requestedIndex = 0;
   int currentIndex = -1;
 
-  _SourceNode _tree =
-      _SourceNode(id: '', type: '', data: <String, dynamic>{});
+  _SourceNode _tree = _SourceNode(id: '', type: '', data: <String, dynamic>{});
   final List<Map<String, dynamic>> leaves = <Map<String, dynamic>>[];
 
   final List<MethodCall> methodCalls = <MethodCall>[];
@@ -412,8 +420,7 @@ class MockPlayerInstance {
   /// a play arriving while one is already pending settles immediately, while
   /// the request bound to the playback lifecycle stays pending.
   Completer<void>? pendingPlay;
-  Completer<void> _ensurePendingPlay() =>
-      pendingPlay ??= Completer<void>();
+  Completer<void> _ensurePendingPlay() => pendingPlay ??= Completer<void>();
 
   static String methodChannelName(String id) =>
       'com.ryanheise.just_audio.methods.$id';
@@ -422,8 +429,7 @@ class MockPlayerInstance {
   static String dataChannelName(String id) =>
       'com.ryanheise.just_audio.data.$id';
 
-  MethodChannel get methodChannel =>
-      MethodChannel(methodChannelName(id));
+  MethodChannel get methodChannel => MethodChannel(methodChannelName(id));
   EventChannel get eventChannel => EventChannel(eventChannelName(id));
   EventChannel get dataChannel => EventChannel(dataChannelName(id));
 
@@ -451,7 +457,9 @@ class MockPlayerInstance {
     final buffered = durationUs > 0
         ? (positionUs > durationUs
             ? durationUs
-            : (positionUs > durationUs * progress ? positionUs : (durationUs * progress).round()))
+            : (positionUs > durationUs * progress
+                ? positionUs
+                : (durationUs * progress).round()))
         : positionUs;
     return <String, dynamic>{
       'processingState': processingState,
@@ -494,7 +502,8 @@ class MockPlayerInstance {
   }
 
   /// The physical leaves in the order the native playback list holds them.
-  List<Map<String, dynamic>> get playlist => List<Map<String, dynamic>>.unmodifiable(leaves);
+  List<Map<String, dynamic>> get playlist =>
+      List<Map<String, dynamic>>.unmodifiable(leaves);
 
   /// The automatic progression order produced by the shuffle orders.
   ///
@@ -902,7 +911,8 @@ class MockAudioEngine {
           final switchesItem = index != player.currentIndex;
           player.requestedIndex = index;
           player.currentIndex = index;
-          player.seekPending = switchesItem || player.seekPending || player.loading;
+          player.seekPending =
+              switchesItem || player.seekPending || player.loading;
         } else if (player.seekPending || player.loading) {
           player.seekPending = true;
         }
@@ -911,7 +921,8 @@ class MockAudioEngine {
         player.durationUs = player.durationOf(
           player.leaves.isEmpty
               ? null
-              : player.leaves[player.currentIndex.clamp(0, player.leaves.length - 1)],
+              : player.leaves[
+                  player.currentIndex.clamp(0, player.leaves.length - 1)],
         );
         player.broadcastState();
         return <String, dynamic>{};

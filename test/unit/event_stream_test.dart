@@ -33,7 +33,8 @@ void main() {
     final received = <Map<dynamic, dynamic>>[];
     final subscription = EventChannel(eventChannelName)
         .receiveBroadcastStream()
-        .listen((dynamic event) => received.add(event as Map<dynamic, dynamic>));
+        .listen(
+            (dynamic event) => received.add(event as Map<dynamic, dynamic>));
 
     await channel.invokeMethod<void>('seek', <String, dynamic>{
       'position': 1234567,
@@ -90,7 +91,8 @@ void main() {
     final received = <Map<dynamic, dynamic>>[];
     final subscription = EventChannel(eventChannelName)
         .receiveBroadcastStream()
-        .listen((dynamic event) => received.add(event as Map<dynamic, dynamic>));
+        .listen(
+            (dynamic event) => received.add(event as Map<dynamic, dynamic>));
 
     await channel.invokeMethod<void>('seek', <String, dynamic>{'position': 0});
     await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -111,7 +113,8 @@ void main() {
     final received = <Map<dynamic, dynamic>>[];
     final subscription = EventChannel(eventChannelName)
         .receiveBroadcastStream()
-        .listen((dynamic event) => received.add(event as Map<dynamic, dynamic>));
+        .listen(
+            (dynamic event) => received.add(event as Map<dynamic, dynamic>));
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     player.fail('WinRT: the media pipeline could not decode the stream');
@@ -156,9 +159,8 @@ void main() {
     // real change is published; a fresh subscriber is primed so it is never left
     // without a snapshot.
     final received = <Map<dynamic, dynamic>>[];
-    final subscription = player.eventChannel
-        .receiveBroadcastStream()
-        .listen((dynamic event) => received.add(event as Map<dynamic, dynamic>));
+    final subscription = player.eventChannel.receiveBroadcastStream().listen(
+        (dynamic event) => received.add(event as Map<dynamic, dynamic>));
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     // Two seeks move the position but change no player data.
@@ -176,21 +178,26 @@ void main() {
     expect(received.length, greaterThanOrEqualTo(2),
         reason: 'the state map is a sample and is always published');
     expect(player.deliveredData, hasLength(lessThanOrEqualTo(2)),
-        reason: 'a seek that changes no intent must not republish the data map');
+        reason:
+            'a seek that changes no intent must not republish the data map');
     expect(player.dataWouldChange, isFalse);
   });
 
-    test('the data channel reports volume, speed, loop and shuffle changes',
+  test('the data channel reports volume, speed, loop and shuffle changes',
       () async {
     final received = <Map<dynamic, dynamic>>[];
     final subscription = EventChannel(dataChannelName)
         .receiveBroadcastStream()
-        .listen((dynamic event) => received.add(event as Map<dynamic, dynamic>));
+        .listen(
+            (dynamic event) => received.add(event as Map<dynamic, dynamic>));
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
-    await channel.invokeMethod<void>('setVolume', <String, dynamic>{'volume': 0.65});
-    await channel.invokeMethod<void>('setSpeed', <String, dynamic>{'speed': 1.25});
-    await channel.invokeMethod<void>('setLoopMode', <String, dynamic>{'loopMode': 1});
+    await channel
+        .invokeMethod<void>('setVolume', <String, dynamic>{'volume': 0.65});
+    await channel
+        .invokeMethod<void>('setSpeed', <String, dynamic>{'speed': 1.25});
+    await channel
+        .invokeMethod<void>('setLoopMode', <String, dynamic>{'loopMode': 1});
     await Future<void>.delayed(const Duration(milliseconds: 20));
     await subscription.cancel();
 
@@ -207,7 +214,8 @@ void main() {
     final received = <Map<dynamic, dynamic>>[];
     final subscription = EventChannel(eventChannelName)
         .receiveBroadcastStream()
-        .listen((dynamic event) => received.add(event as Map<dynamic, dynamic>));
+        .listen(
+            (dynamic event) => received.add(event as Map<dynamic, dynamic>));
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     await channel.invokeMethod<void>('dispose', <String, dynamic>{});
@@ -224,7 +232,8 @@ void main() {
     final received = <Map<dynamic, dynamic>>[];
     final subscription = EventChannel(dataChannelName)
         .receiveBroadcastStream()
-        .listen((dynamic event) => received.add(event as Map<dynamic, dynamic>));
+        .listen(
+            (dynamic event) => received.add(event as Map<dynamic, dynamic>));
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     final countBefore = received.length;

@@ -5,11 +5,13 @@ import 'package:material_ui/material_ui.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const MaterialApp(
-    title: 'just_audio_windows_plus',
-    debugShowCheckedModeBanner: false,
-    home: AudioPlayerExample(),
-  ));
+  runApp(
+    const MaterialApp(
+      title: 'just_audio_windows_plus',
+      debugShowCheckedModeBanner: false,
+      home: AudioPlayerExample(),
+    ),
+  );
 }
 
 class AudioPlayerExample extends StatefulWidget {
@@ -42,7 +44,9 @@ class _AudioPlayerExampleState extends State<AudioPlayerExample> {
   void initState() {
     super.initState();
     _player = AudioPlayer();
-    unawaited(_player.setAudioSources(_playlist).catchError((Object _) => null));
+    unawaited(
+      _player.setAudioSources(_playlist).catchError((Object _) => null),
+    );
   }
 
   @override
@@ -74,10 +78,15 @@ class _AudioPlayerExampleState extends State<AudioPlayerExample> {
               StreamBuilder<SequenceState?>(
                 stream: _player.sequenceStateStream,
                 builder: (context, snapshot) {
-                  final title = snapshot.data?.currentSource?.tag as String? ?? 'Loading...';
+                  final title =
+                      snapshot.data?.currentSource?.tag as String? ??
+                      'Loading...';
                   return Text(
                     title,
-                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
                   );
                 },
               ),
@@ -88,14 +97,17 @@ class _AudioPlayerExampleState extends State<AudioPlayerExample> {
                 stream: _player.durationStream,
                 initialData: _player.duration,
                 builder: (context, durSnap) {
-                  final total = durSnap.data ?? _player.duration ?? Duration.zero;
+                  final total =
+                      durSnap.data ?? _player.duration ?? Duration.zero;
 
                   return StreamBuilder<Duration>(
                     stream: _player.positionStream,
                     initialData: _player.position,
                     builder: (context, posSnap) {
                       final pos = posSnap.data ?? _player.position;
-                      final max = total > Duration.zero ? total.inMilliseconds.toDouble() : 1.0;
+                      final max = total > Duration.zero
+                          ? total.inMilliseconds.toDouble()
+                          : 1.0;
                       final value = total > Duration.zero
                           ? pos.inMilliseconds.toDouble().clamp(0.0, max)
                           : 0.0;
@@ -107,7 +119,9 @@ class _AudioPlayerExampleState extends State<AudioPlayerExample> {
                               value: value,
                               max: max,
                               onChanged: total > Duration.zero
-                                  ? (v) => _player.seek(Duration(milliseconds: v.round()))
+                                  ? (v) => _player.seek(
+                                      Duration(milliseconds: v.round()),
+                                    )
                                   : null,
                             ),
                           ),
@@ -135,8 +149,11 @@ class _AudioPlayerExampleState extends State<AudioPlayerExample> {
                 builder: (context, playerSnapshot) {
                   final state = playerSnapshot.data;
                   final isPlaying = state?.playing ?? false;
-                  final processing = state?.processingState ?? ProcessingState.idle;
-                  final isLoading = processing == ProcessingState.loading || processing == ProcessingState.buffering;
+                  final processing =
+                      state?.processingState ?? ProcessingState.idle;
+                  final isLoading =
+                      processing == ProcessingState.loading ||
+                      processing == ProcessingState.buffering;
 
                   return StreamBuilder<SequenceState?>(
                     stream: _player.sequenceStateStream,
@@ -158,13 +175,21 @@ class _AudioPlayerExampleState extends State<AudioPlayerExample> {
                                   height: 52,
                                   child: Padding(
                                     padding: EdgeInsets.all(12),
-                                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                    ),
                                   ),
                                 )
                               : IconButton(
                                   iconSize: 52,
-                                  icon: Icon(isPlaying ? Icons.pause_circle_filled : Icons.play_circle_filled),
-                                  onPressed: isPlaying ? _player.pause : _player.play,
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.pause_circle_filled
+                                        : Icons.play_circle_filled,
+                                  ),
+                                  onPressed: isPlaying
+                                      ? _player.pause
+                                      : _player.play,
                                 ),
                           const SizedBox(width: 8),
                           IconButton(

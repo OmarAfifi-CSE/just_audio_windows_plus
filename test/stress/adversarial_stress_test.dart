@@ -51,7 +51,8 @@ void main() {
     await Future.wait(awaitable);
 
     final transport = player.methodCalls
-        .where((call) => const <String>{'play', 'pause', 'stop'}.contains(call.method))
+        .where((call) =>
+            const <String>{'play', 'pause', 'stop'}.contains(call.method))
         .length;
     expect(transport, iterations);
   });
@@ -121,15 +122,12 @@ void main() {
       final operation = switch (tick % 5) {
         0 => channel.invokeMethod<void>('play', <String, dynamic>{}),
         1 => channel.invokeMethod<void>(
-            'seek',
-            <String, dynamic>{'position': tick * 5000}),
+            'seek', <String, dynamic>{'position': tick * 5000}),
         2 => channel.invokeMethod<void>(
-            'setVolume',
-            <String, dynamic>{'volume': (tick % 10) / 10.0}),
+            'setVolume', <String, dynamic>{'volume': (tick % 10) / 10.0}),
         3 => channel.invokeMethod<void>('pause', <String, dynamic>{}),
         _ => channel.invokeMethod<void>(
-            'setSpeed',
-            <String, dynamic>{'speed': 1.0 + (tick % 4) * 0.25}),
+            'setSpeed', <String, dynamic>{'speed': 1.0 + (tick % 4) * 0.25}),
       };
       issued++;
       if (issued >= 60) {
@@ -188,8 +186,8 @@ void main() {
     ]) {
       await expectLater(
         channel.invokeMethod<void>(method, <String, dynamic>{}),
-        throwsA(isA<PlatformException>()
-            .having((e) => e.code, 'code', 'disposed')),
+        throwsA(
+            isA<PlatformException>().having((e) => e.code, 'code', 'disposed')),
         reason: '$method should be rejected after dispose',
       );
     }
@@ -224,8 +222,8 @@ void main() {
       expect(MockAudioEngine.getPlayer('swarm_$i')!.playing, isTrue);
     }
 
-    await MockAudioEngine.rootChannel.invokeMethod<void>(
-        'disposeAllPlayers', <String, dynamic>{});
+    await MockAudioEngine.rootChannel
+        .invokeMethod<void>('disposeAllPlayers', <String, dynamic>{});
     expect(MockAudioEngine.activePlayers, isEmpty);
   });
 }

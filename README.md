@@ -7,7 +7,7 @@
 [![pub package](https://img.shields.io/pub/v/just_audio_windows_plus.svg?color=blue&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus)
 [![pub points](https://img.shields.io/pub/points/just_audio_windows_plus?color=2E8B57&label=pub%20points&style=flat-square)](https://pub.dev/packages/just_audio_windows_plus/score)
 [![CI Quality Gate](https://img.shields.io/github/actions/workflow/status/OmarAfifi-CSE/just_audio_windows_plus/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/OmarAfifi-CSE/just_audio_windows_plus/actions/workflows/ci.yml)
-[![Tests: 215 Passing](https://img.shields.io/badge/Tests-215%20Passing-brightgreen?style=flat-square)](test/README.md)
+[![Tests: 222 Passing](https://img.shields.io/badge/Tests-222%20Passing-brightgreen?style=flat-square)](test/README.md)
 
 [![Standard: C++20](https://img.shields.io/badge/Standard-C%2B%2B20-blueviolet?style=flat-square)](https://en.cppreference.com/w/cpp/20)
 [![Platform: Windows 10 | 11](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-0078D7?style=flat-square)](https://flutter.dev)
@@ -15,14 +15,14 @@
 
 <p align="center">
   <b>Seamless, crash-free, high-fidelity audio playback for Flutter desktop applications.</b><br>
-  Built on the native WinRT `Windows.Media.Playback.MediaPlayer` engine with an ultra-reliable C++20 core and complete drop-in compatibility with <a href="https://pub.dev/packages/just_audio">just_audio</a>.
+  Built on the native WinRT <code>Windows.Media.Playback.MediaPlayer</code> engine with an ultra-reliable C++20 core and complete drop-in compatibility with <a href="https://pub.dev/packages/just_audio">just_audio</a>.
 </p>
 
 <p align="center">
   <a href="#-why-just_audio_windows_plus"><b>Why This Package?</b></a> •
   <a href="#-architectural-comparison"><b>Comparison</b></a> •
   <a href="#-quickstart-30-seconds"><b>Quickstart</b></a> •
-  <a href="#-ready-to-copy-player-widget"><b>Ready Widget</b></a> •
+  <a href="#-complete-ready-to-copy-player-widget"><b>Ready Widget</b></a> •
   <a href="#-practical-recipes"><b>Code Recipes</b></a> •
   <a href="#-under-the-hood-built-for-desktop-reliability"><b>Under the Hood</b></a> •
   <a href="#-frequently-asked-questions-faq"><b>FAQ</b></a>
@@ -49,7 +49,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 - 🛡️ **Bulletproof Lifecycle & Disposal**: Native callbacks utilize `std::weak_ptr` with atomic generation tracking. Disposing of a player mid-playback, fast page switching, or triggering hot restart never causes native crashes.
 - 🎯 **Strict `just_audio` Contract Compliance**: `await player.setFilePath(...)` resolves with the exact microsecond duration or throws a catchable `PlayerException` on missing files / 404s (no infinite hangs). `await player.play()` stays active until pause or completion.
 - 🔀 **True Playlist & Shuffle Architecture**: Native recursive source tree supports nested concatenating, looping, and clipping sources with linear, permutation-validated shuffling and dynamic mutations (even starting from an empty playlist).
-- 🧪 **215 Automated Verification Tests**: **52 real Windows end-to-end playback integration scenarios** run against the compiled plugin (Debug and Release), **54 native C++ unit tests** exercising the production headers, and **109 Dart contract tests** that pin the exact channel protocol, argument shapes, and error codes the native engine implements.
+- 🧪 **222 Automated Verification Tests**: **59 real Windows end-to-end playback integration scenarios** run against the compiled plugin (Debug and Release), **54 native C++ unit tests** exercising the production headers, and **109 Dart contract tests** that pin the exact channel protocol, argument shapes, and error codes the native engine implements.
 
 ---
 
@@ -57,7 +57,7 @@ The existing `just_audio_windows` (v0.2.3) implementation suffered from unhandle
 
 See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 
-| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.6) |
+| Capability / Reliability Dimension | `just_audio_windows` (0.2.3) | `just_audio_windows_plus` (0.5.7) |
 |---|:---:|:---:|
 | **Platform Thread Marshalling** | ❌ Background Threadpool (Engine logs non-platform thread warnings) | ✅ **Win32 Message Window (`HWND_MESSAGE`) serialization** |
 | **C++ Toolchain Standard** | ❌ C++17 (Breaks on modern MSVC 14.51 / VS 2026 `STL1011`) | ✅ **Modern C++20 Core (Clean `/W4 /WX` on VS 2026)** |
@@ -72,7 +72,7 @@ See how `just_audio_windows_plus` compares to `just_audio_windows` (0.2.3):
 | **Native Error Text Integrity** | ❌ Temporary `c_str()` dangling pointer (`FormatException`) | ✅ **Owned `ArgumentError` strings preserve UTF-8 text** |
 | **System Media Transport Controls** | ❌ Automatically hijacks OS lockscreen with blank overlays | ✅ **De-conflicted SMTC (Integrate cleanly with `audio_service`)** |
 | **Multi-Engine Isolation** | ❌ Namespace globals share state across Flutter engines | ✅ **Instance-scoped players and dispatchers** |
-| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **52 Real Playback Scenarios + 54 C++ Tests + 109 Contract Tests** |
+| **Windows Playback Verification** | ❌ None (Only mock channel handlers) | ✅ **59 Real Playback Scenarios + 54 C++ Tests + 109 Contract Tests** |
 | **Restart from Completed State** | ❌ Engine parks in `completed` after EOF; replaying the same source stays silent until a fresh source load | ✅ **`completed → ready` re-arm + commit-on-success delivery + transactional mutation rollback** |
 
 ---
@@ -88,7 +88,7 @@ dependencies:
   flutter:
     sdk: flutter
   just_audio: ^0.10.6
-  just_audio_windows_plus: ^0.5.6
+  just_audio_windows_plus: ^0.5.7
 ```
 
 > [!TIP]
@@ -344,7 +344,7 @@ flutter test
 # 2. Run native C++ source tree and dispatcher unit tests (54 tests)
 powershell -ExecutionPolicy Bypass tool/test_native.ps1
 
-# 3. Run the real Windows playback regression suite (52 scenarios)
+# 3. Run the real Windows playback regression suite (59 scenarios)
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode debug
 powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode release
 ```
@@ -370,6 +370,10 @@ powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode release
 - **Rejected Load Is Isolated**: Asserts an out-of-range `initialIndex` reports `argument_error` and leaves another player's playback running.
 - **Buffered Position Bounds**: Asserts `bufferedPosition` never exceeds `duration`.
 - **Late Data Subscriber**: Asserts a data-channel subscriber that attaches after earlier publishes still receives the current intent.
+- **Real Encoded Formats (MP3 & M4A/AAC)**: Asserts real MP3 and M4A (AAC) files—plus clipped M4A playback—load, seek, and complete on native Windows Media Foundation decoders.
+- **`StreamAudioSource` & `LockCachingAudioSource`**: Asserts in-memory byte range streaming via the local proxy, authenticated cache downloads, and offline `file://` resolution (handling upstream `just_audio 0.10.6`'s unclosed `.part` handle quirk on Windows).
+- **Local HLS (`.m3u8`) & Live Chunked HTTP Streams**: Asserts direct and `Authorization`-proxied `.m3u8` + MPEG-TS playback, plus unseekable chunked HTTP MP3 streaming opened with `initialPosition: Duration.zero`.
+- **Stop Reactivation, Track Navigation & Dynamic `setClip()`**: Asserts `stop()` tears down and reactivates cleanly, `seekToNext()` / `seekToPrevious()` traverse playlists accurately, and `setClip()` updates and clears active clip bounds dynamically.
 
 *(See [test/README.md](test/README.md) for full instructions and coverage scope)*.
 
@@ -381,10 +385,10 @@ powershell -ExecutionPolicy Bypass tool/test_windows.ps1 -Mode release
 **No additional runtime is required.** `just_audio_windows_plus` drives the built-in WinRT `Windows.Media.Playback.MediaPlayer`, which is present on every Windows 10 and 11 machine, so there is no FFmpeg and no third-party DLL to bundle. Individual *codecs* are still an operating-system capability: if a format is missing on a given Windows edition, this package cannot supply it.
 
 #### Q: What audio formats are supported?
-Whatever the host's Windows Media Foundation can decode, which on a typical Windows 10 or 11 install covers MP3, AAC, WAV, M4A/AAC and WMA. Format support is a property of the operating system, not of this package, and the exact set varies by Windows edition, version, and installed Media Feature Pack. The test suites in this repository use generated PCM WAV fixtures and a local HTTP server; they do **not** establish codec coverage, so verify your own formats on the Windows versions you ship to. Adaptive streaming (HLS, DASH) is passed to the system player as a `progressive`/`hls`/`dash` source and inherits the same OS-dependent support.
+Whatever the host's Windows Media Foundation can decode, which on a typical Windows 10 or 11 install covers MP3, AAC, WAV, M4A/AAC and WMA. Format support is a property of the operating system, not of this package, and the exact set varies by Windows edition, version, and installed Media Feature Pack. The test suites in this repository verify generated PCM WAV, self-contained MP3/M4A (AAC), and local HLS/MPEG-TS fixtures over a loopback HTTP server; they do **not** establish universal codec coverage beyond those tested formats, so verify any additional formats on the Windows versions you ship to. Adaptive streaming (HLS, DASH) is passed to the system player as a `progressive`/`hls`/`dash` source and inherits the same OS-dependent support.
 
 #### Q: Can I run multiple `AudioPlayer` instances simultaneously?
-**Yes.** All state, method channels, and event sinks are strictly isolated per player instance. You can run multiple players simultaneously (e.g. background music + voice-over) with zero interference.
+**Yes.** All state, method channels, and event sinks are strictly isolated per player instance. You can run multiple players simultaneously (e.g. narration + ambient audio) with zero interference.
 
 #### Q: How do I handle background audio or keyboard media keys?
 Because `just_audio_windows_plus` cleanly disables automatic WinRT SMTC hijacking, you can use [`audio_service`](https://pub.dev/packages/audio_service) to manage OS lockscreen widgets and keyboard media keys with total control.

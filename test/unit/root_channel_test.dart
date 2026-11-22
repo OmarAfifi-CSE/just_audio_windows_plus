@@ -20,7 +20,8 @@ void main() {
         // The native root handler requires an EncodableMap and reports
         // anything else as argument_error rather than crashing.
         if (methodCall.arguments is! Map) {
-          throw ChannelContractError('argument_error', 'arguments must be a map');
+          throw ChannelContractError(
+              'argument_error', 'arguments must be a map');
         }
         final args = methodCall.arguments as Map<dynamic, dynamic>;
 
@@ -118,9 +119,11 @@ void main() {
       expect(activeIds, isEmpty);
     });
 
-    test('an unrecognized root method surfaces as MissingPluginException', () async {
+    test('an unrecognized root method surfaces as MissingPluginException',
+        () async {
       await expectLater(
-        rootChannel.invokeMethod<void>('unknownRootMethod', <String, dynamic>{}),
+        rootChannel
+            .invokeMethod<void>('unknownRootMethod', <String, dynamic>{}),
         throwsA(isA<MissingPluginException>()),
       );
     });

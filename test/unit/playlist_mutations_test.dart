@@ -16,8 +16,8 @@ void main() {
   late MethodChannel channel;
   late MockPlayerInstance player;
 
-  final Matcher argumentError = throwsA(isA<PlatformException>()
-      .having((e) => e.code, 'code', 'argument_error'));
+  final Matcher argumentError = throwsA(
+      isA<PlatformException>().having((e) => e.code, 'code', 'argument_error'));
 
   setUp(() async {
     MockAudioEngine.install();
@@ -32,7 +32,8 @@ void main() {
 
   tearDown(MockAudioEngine.uninstall);
 
-  Future<void> insert(int index, List<Map<String, dynamic>> children, List<int> order) =>
+  Future<void> insert(
+          int index, List<Map<String, dynamic>> children, List<int> order) =>
       channel.invokeMethod<void>('concatenatingInsertAll', <String, dynamic>{
         'id': 'root',
         'index': index,
@@ -62,19 +63,37 @@ void main() {
 
       await insert(0, <Map<String, dynamic>>[
         progressiveSource('x', 'file:///audio/x.mp3'),
-      ], <int>[0, 1, 2, 3]);
+      ], <int>[
+        0,
+        1,
+        2,
+        3
+      ]);
       expect(player.leaves, hasLength(4));
       expect(player.leaves.first['id'], 'x');
 
       await insert(2, <Map<String, dynamic>>[
         progressiveSource('y', 'file:///audio/y.mp3'),
-      ], <int>[0, 1, 2, 3, 4]);
+      ], <int>[
+        0,
+        1,
+        2,
+        3,
+        4
+      ]);
       expect(player.leaves, hasLength(5));
       expect(player.leaves[2]['id'], 'y');
 
       await insert(5, <Map<String, dynamic>>[
         progressiveSource('z', 'file:///audio/z.mp3'),
-      ], <int>[0, 1, 2, 3, 4, 5]);
+      ], <int>[
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ]);
       expect(player.leaves, hasLength(6));
       expect(player.leaves.last['id'], 'z');
     });
@@ -82,7 +101,12 @@ void main() {
     test('accepts index == child count, the append position', () async {
       await insert(3, <Map<String, dynamic>>[
         progressiveSource('x', 'file:///audio/x.mp3'),
-      ], <int>[0, 1, 2, 3]);
+      ], <int>[
+        0,
+        1,
+        2,
+        3
+      ]);
       expect(player.leaves, hasLength(4));
     });
 
@@ -90,13 +114,23 @@ void main() {
       await expectLater(
         insert(-1, <Map<String, dynamic>>[
           progressiveSource('x', 'file:///audio/x.mp3'),
-        ], <int>[0, 1, 2, 3]),
+        ], <int>[
+          0,
+          1,
+          2,
+          3
+        ]),
         argumentError,
       );
       await expectLater(
         insert(4, <Map<String, dynamic>>[
           progressiveSource('x', 'file:///audio/x.mp3'),
-        ], <int>[0, 1, 2, 3]),
+        ], <int>[
+          0,
+          1,
+          2,
+          3
+        ]),
         argumentError,
       );
     });
@@ -149,9 +183,12 @@ void main() {
         <int>[],
       ]) {
         await expectLater(
-          insert(0, <Map<String, dynamic>>[
-            progressiveSource('x', 'file:///audio/x.mp3'),
-          ], order),
+          insert(
+              0,
+              <Map<String, dynamic>>[
+                progressiveSource('x', 'file:///audio/x.mp3'),
+              ],
+              order),
           argumentError,
         );
       }
@@ -162,7 +199,12 @@ void main() {
       await expectLater(
         insert(0, <Map<String, dynamic>>[
           progressiveSource('x', 'file:///audio/x.mp3'),
-        ], <int>[0, 0, 0, 0]),
+        ], <int>[
+          0,
+          0,
+          0,
+          0
+        ]),
         argumentError,
       );
       expect(player.leaves.map((leaf) => leaf['id']).toList(), before);
@@ -323,7 +365,8 @@ void main() {
     });
 
     test('mutates a nested concatenating source by its own id', () async {
-      await channel.invokeMethod<void>('concatenatingInsertAll', <String, dynamic>{
+      await channel
+          .invokeMethod<void>('concatenatingInsertAll', <String, dynamic>{
         'id': 'group',
         'index': 1,
         'children': <Map<String, dynamic>>[
@@ -371,21 +414,25 @@ void main() {
   group('mutating an empty playlist', () {
     test('inserting the first item attaches a source', () async {
       await channel.invokeMethod<void>('load', <String, dynamic>{
-        'audioSource': concatenatingSource('root', <Map<String, dynamic>>[], <int>[]),
+        'audioSource':
+            concatenatingSource('root', <Map<String, dynamic>>[], <int>[]),
       });
       expect(player.leaves, isEmpty);
       expect(player.sourceSet, isTrue);
 
       await insert(0, <Map<String, dynamic>>[
         progressiveSource('first', 'file:///audio/first.mp3'),
-      ], <int>[0]);
+      ], <int>[
+        0
+      ]);
 
       expect(player.leaves, hasLength(1));
       expect(player.completed, isFalse);
       expect(player.sourceSet, isTrue);
     });
 
-    test('emptying the playlist again completes any outstanding play', () async {
+    test('emptying the playlist again completes any outstanding play',
+        () async {
       await removeRange(0, 3, <int>[]);
       expect(player.leaves, isEmpty);
       expect(player.completed, isTrue);

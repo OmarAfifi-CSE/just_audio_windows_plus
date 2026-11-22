@@ -47,11 +47,37 @@ class ReverseShuffle extends ShuffleOrder {
   }
 }
 
+// ignore: experimental_member_use
+class _MemoryStreamAudioSource extends StreamAudioSource {
+  final Uint8List bytes;
+  int requestCount = 0;
+
+  _MemoryStreamAudioSource(this.bytes);
+
+  @override
+  // ignore: experimental_member_use
+  Future<StreamAudioResponse> request([int? start, int? end]) async {
+    requestCount++;
+    final s = start ?? 0;
+    final e = (end ?? bytes.length).clamp(s, bytes.length);
+    final slice = bytes.sublist(s, e);
+    // ignore: experimental_member_use
+    return StreamAudioResponse(
+      sourceLength: bytes.length,
+      contentLength: slice.length,
+      offset: s,
+      stream: Stream<List<int>>.value(slice),
+      contentType: 'audio/wav',
+    );
+  }
+}
+
 class RawPlayer {
   static const root = MethodChannel('com.ryanheise.just_audio.methods');
   final String id;
-  late final MethodChannel channel =
-      MethodChannel('com.ryanheise.just_audio.methods.$id');
+  late final MethodChannel channel = MethodChannel(
+    'com.ryanheise.just_audio.methods.$id',
+  );
   final events = <Map<dynamic, dynamic>>[];
   StreamSubscription<dynamic>? subscription;
   RawPlayer(this.id);
@@ -60,8 +86,8 @@ class RawPlayer {
     subscription = EventChannel('com.ryanheise.just_audio.events.$id')
         .receiveBroadcastStream()
         .listen((event) {
-      events.add(event as Map<dynamic, dynamic>);
-    }, onError: (Object _) {});
+          events.add(event as Map<dynamic, dynamic>);
+        }, onError: (Object _) {});
     await call('setVolume', {'volume': 0.0});
   }
 
@@ -82,20 +108,22 @@ class RawPlayer {
 }
 
 Map<String, Object?> leaf(String id, [Uri? uri]) => {
-      'id': id,
-      'type': 'progressive',
-      'uri': (uri ?? _shortWav.uri).toString(),
-      'headers': null
-    };
+  'id': id,
+  'type': 'progressive',
+  'uri': (uri ?? _shortWav.uri).toString(),
+  'headers': null,
+};
 Map<String, Object?> playlist(
-        String id, List<Map<String, Object?>> children, List<int> order) =>
-    {
-      'id': id,
-      'type': 'concatenating',
-      'children': children,
-      'shuffleOrder': order,
-      'useLazyPreparation': true
-    };
+  String id,
+  List<Map<String, Object?>> children,
+  List<int> order,
+) => {
+  'id': id,
+  'type': 'concatenating',
+  'children': children,
+  'shuffleOrder': order,
+  'useLazyPreparation': true,
+};
 
 Future<Object?> caught(Future<dynamic> future) async {
   try {
@@ -110,8 +138,11 @@ void require(bool condition, String message) {
   if (!condition) throw StateError(message);
 }
 
-Future<void> eventually(bool Function() predicate, String description,
-    {Duration timeout = const Duration(seconds: 6)}) async {
+Future<void> eventually(
+  bool Function() predicate,
+  String description, {
+  Duration timeout = const Duration(seconds: 6),
+}) async {
   final watch = Stopwatch()..start();
   while (!predicate()) {
     if (watch.elapsed > timeout) throw TimeoutException(description, timeout);
@@ -128,15 +159,22 @@ Future<void> scenario(String name, Future<void> Function() body) async {
     await body().timeout(const Duration(seconds: 18));
     _results.add({'name': name, 'passed': true});
   } catch (error, stack) {
-    _results.add(
-        {'name': name, 'passed': false, 'error': '$error', 'stack': '$stack'});
+    _results.add({
+      'name': name,
+      'passed': false,
+      'error': '$error',
+      'stack': '$stack',
+    });
   } finally {
     for (final player in _players) {
       try {
         await player.dispose().timeout(const Duration(seconds: 3));
       } catch (error) {
-        _results
-            .add({'name': '$name cleanup', 'passed': false, 'error': '$error'});
+        _results.add({
+          'name': '$name cleanup',
+          'passed': false,
+          'error': '$error',
+        });
       }
     }
     _players.clear();
@@ -177,10 +215,106 @@ File makeWav(String name, int milliseconds) {
     ..writeAsBytesSync(data.buffer.asUint8List());
 }
 
+Uint8List makeMp3Bytes(int frames) {
+  const frameSize = 104;
+  final bytes = Uint8List(frames * frameSize);
+  for (var i = 0; i < frames; i++) {
+    final offset = i * frameSize;
+    bytes[offset] = 0xFF;
+    bytes[offset + 1] = 0xFB;
+    bytes[offset + 2] = 0x10;
+    bytes[offset + 3] = 0xC4;
+  }
+  return bytes;
+}
+
+File makeMp3(String name, int frames) =>
+    File('${_artifacts.path}/$name')..writeAsBytesSync(makeMp3Bytes(frames));
+
+const _m4aOneSecondBase64 =
+    'AAAAHGZ0eXBNNEEgAAACAE00QSBpc29taXNvMgAAA69tb292AAAAbG12aGQAAAAAAAAA'
+    'AAAAAAAAAAPoAAAD6AABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAA'
+    'AAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAC2XRyYWsA'
+    'AABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAD6AAAAAAAAAAAAAAAAQEAAAAAAQAA'
+    'AAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAACRlZHRzAAAA'
+    'HGVsc3QAAAAAAAAAAQAAA+gAAAQAAAEAAAAAAlFtZGlhAAAAIG1kaGQAAAAAAAAAAAAA'
+    'AAAAAKxEAACwRFXEAAAAAAAtaGRscgAAAAAAAAAAc291bgAAAAAAAAAAAAAAAFNvdW5k'
+    'SGFuZGxlcgAAAAH8bWluZgAAABBzbWhkAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAA'
+    'AAAAAAEAAAAMdXJsIAAAAAEAAAHAc3RibAAAAGpzdHNkAAAAAAAAAAEAAABabXA0YQAA'
+    'AAAAAAABAAAAAAAAAAAAAQAQAAAAAKxEAAAAAAA2ZXNkcwAAAAADgICAJQABAASAgIAX'
+    'QBUAAAAAAH0AAAAGBAWAgIAFEghW5QAGgICAAQIAAAAgc3R0cwAAAAAAAAACAAAALAAA'
+    'BAAAAAABAAAARAAAABxzdHNjAAAAAAAAAAEAAAABAAAALQAAAAEAAADIc3RzegAAAAAA'
+    'AAAAAAAALQAAABUAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAE'
+    'AAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAA'
+    'BAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAA'
+    'AAQAAAAEAAAABAAAAAQAAAAEAAAABAAAAAQAAAAEAAAABAAAABRzdGNvAAAAAAAAAAEA'
+    'AAPbAAAAGnNncGQBAAAAcm9sbAAAAAIAAAAB//8AAAAcc2JncAAAAAByb2xsAAAAAQAA'
+    'AC0AAAABAAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwA'
+    'AAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY2Mi4xMi4x'
+    'MDEAAAAIZnJlZQAAAM1tZGF03gIATGF2YzYyLjI4LjEwMQACMEAOARggBwEYIAcBGCAH'
+    'ARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcBGCAHARgg'
+    'BwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEY'
+    'IAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcBGCAHARggBwEYIAcB'
+    'GCAHARggBwEYIAc=';
+
+File makeM4a(String name) =>
+    File('${_artifacts.path}/$name')
+      ..writeAsBytesSync(base64Decode(_m4aOneSecondBase64));
+
+const _hlsTsOneSecondBase64 =
+    'R0AREABC8CUAAcEAAP8B/wAB/IAUSBIBBkZGbXBlZwlTZXJ2aWNlMDF3fEPK////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '//////////////////////////////////9HQAAQAACwDQABwQAAAAHwACqxBLL/////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '/////////////////////////////////////////////////////////////////////0dQ'
+    'ABAAArASAAHBAADhAPAAD+EA8AC2m8DZ////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////R0EAMAdQAAB7DH4AAAABwADJgIAFIQAH2GH/8VBA'
+    'A5/83gIATGF2YzYyLjI4LjEwMQACMEAO//FQQAF//AEYIAf/8VBAAX/8ARggB//xUEABf/wB'
+    'GCAH//FQQAF//AEYIAf/8VBAAX/8ARggB//xUEABf/wBGCAH//FQQAF//AEYIAf/8VBAAX/8'
+    'ARggB//xUEABf/wBGCAH//FQQAF//AEYIAf/8VBAAX/8ARggB//xUEABf/wBGCAH//FHAQAx'
+    'mAD/////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////UEABf/wBGCAH'
+    '//FQQAF//AEYIAf/8VBAAX/8ARggB0dAABEAALANAAHBAAAAAfAAKrEEsv//////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////R1AAEQAC'
+    'sBIAAcEAAOEA8AAP4QDwALabwNn/////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '//////////////////////////9HQQAyB1AAALxa/gAAAAHAALiAgAUhAAndm//xUEABf/wB'
+    'GCAH//FQQAF//AEYIAf/8VBAAX/8ARggB//xUEABf/wBGCAH//FQQAF//AEYIAf/8VBAAX/8'
+    'ARggB//xUEABf/wBGCAH//FQQAF//AEYIAf/8VBAAX/8ARggB//xUEABf/wBGCAH//FQQAF/'
+    '/AEYIAf/8VBAAX/8ARggB//xUEABf/wBGCAH//FQQAF//AEYIAf/8VBAAX/8AUcBADOpAP//'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '/////xggB//xUEABf/wBGCAHR0AREQBC8CUAAcEAAP8B/wAB/IAUSBIBBkZGbXBlZwlTZXJ2'
+    'aWNlMDF3fEPK////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '//////////////////////////////////////////////////////////9HQAASAACwDQAB'
+    'wQAAAAHwACqxBLL/////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '/////////////////////0dQABIAArASAAHBAADhAPAAD+EA8AC2m8DZ////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////////////////////'
+    '////////////////////////////////////////////////////////R0EANBpQAAD9qX4A'
+    '/////////////////////////wAAAcAAl4CABSEAC+LV//FQQAF//AEYIAf/8VBAAX/8ARgg'
+    'B//xUEABf/wBGCAH//FQQAF//AEYIAf/8VBAAX/8ARggB//xUEABf/wBGCAH//FQQAF//AEY'
+    'IAf/8VBAAX/8ARggB//xUEABf/wBGCAH//FQQAF//AEYIAf/8VBAAX/8ARggB//xUEABf/wB'
+    'GCAH//FQQAF//AEYIAc=';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  _artifacts = Directory(Platform.environment['JAW_TEST_OUTPUT'] ??
-      '${Directory.current.path}/native-test-results');
+  _artifacts = Directory(
+    Platform.environment['JAW_TEST_OUTPUT'] ??
+        '${Directory.current.path}/native-test-results',
+  );
   _artifacts.createSync(recursive: true);
   final watchdog = Timer(const Duration(minutes: 5), () {
     _results.add({'name': 'suite watchdog', 'passed': false});
@@ -193,8 +327,10 @@ Future<void> main() async {
   await scenario('load returns known duration', () async {
     final p = await newPlayer();
     final duration = await p.setFilePath(_longWav.path);
-    require(duration == const Duration(seconds: 3),
-        'Expected 3 seconds from load, got $duration');
+    require(
+      duration == const Duration(seconds: 3),
+      'Expected 3 seconds from load, got $duration',
+    );
     require(p.duration == duration, 'Load and event durations disagree');
   });
   await scenario('play future waits for pause', () async {
@@ -214,15 +350,18 @@ Future<void> main() async {
     final p = await newPlayer();
     await p.setFilePath(_shortWav.path);
     await p.play().timeout(const Duration(seconds: 5));
-    require(p.processingState == ProcessingState.completed,
-        'play returned before EOF');
+    require(
+      p.processingState == ProcessingState.completed,
+      'play returned before EOF',
+    );
     require(p.playing, 'EOF cleared playing intent');
     await p.seek(Duration.zero);
-    await eventually(() => p.position > const Duration(milliseconds: 30),
-        'seek after EOF did not resume');
+    await eventually(
+      () => p.position > const Duration(milliseconds: 30),
+      'seek after EOF did not resume',
+    );
   });
-  await scenario('app-style restart from completed survives repeated passes',
-      () async {
+  await scenario('app-style restart from completed survives repeated passes', () async {
     // Replicates the Quran-video-studio recovery sequence exactly: a natural
     // end of track, pause() (the app's merged reset), seek(0), play() again -
     // repeated back-to-back so any intermittent wedge shows up. Also proves
@@ -237,38 +376,52 @@ Future<void> main() async {
     await p.setFilePath(_shortWav.path);
     for (var pass = 0; pass < 5; pass++) {
       await p.play().timeout(const Duration(seconds: 6));
-      require(p.processingState == ProcessingState.completed,
-          'pass $pass: play returned before EOF');
+      require(
+        p.processingState == ProcessingState.completed,
+        'pass $pass: play returned before EOF',
+      );
       // The app's merged-mode reset: pause first, then seek back to zero.
       await p.pause();
       require(!p.playing, 'pass $pass: pause intent');
       await p.seek(Duration.zero);
-      require(p.processingState != ProcessingState.completed,
-          'pass $pass: seek kept the completed state');
+      require(
+        p.processingState != ProcessingState.completed,
+        'pass $pass: seek kept the completed state',
+      );
     }
     // Bare play() straight from the completed engine (no seek first), the
     // app's toggle-from-completed path. Under the corrected contract the
     // Play() restarts the ended list and the play future stays bound to the
     // replayed pass, resolving at its EOF.
     await p.play().timeout(const Duration(seconds: 6));
-    require(p.processingState == ProcessingState.completed,
-        'warm-up play did not reach EOF');
+    require(
+      p.processingState == ProcessingState.completed,
+      'warm-up play did not reach EOF',
+    );
     await p.pause();
     require(!p.playing, 'pause did not clear playing intent');
-    require(p.processingState == ProcessingState.completed,
-        'pause should not erase the completed state');
+    require(
+      p.processingState == ProcessingState.completed,
+      'pause should not erase the completed state',
+    );
     // The corrected contract: a play issued while completed re-arms the
     // engine and the future stays bound to the replayed pass — `await
     // player.play()` resolves when that pass reaches EOF, exactly as on
     // Android. It must NOT resolve the instant the replay starts.
     final completionsBeforeBarePlay = completions.length;
     await p.play().timeout(const Duration(seconds: 6));
-    require(p.processingState == ProcessingState.completed,
-        'bare play after EOF did not replay to completion');
-    require(completions.length > completionsBeforeBarePlay,
-        'the replayed pass delivered no fresh completed event');
-    require(completions.length >= 7,
-        'each restart pass must deliver a fresh completed event, got ${completions.length}');
+    require(
+      p.processingState == ProcessingState.completed,
+      'bare play after EOF did not replay to completion',
+    );
+    require(
+      completions.length > completionsBeforeBarePlay,
+      'the replayed pass delivered no fresh completed event',
+    );
+    require(
+      completions.length >= 7,
+      'each restart pass must deliver a fresh completed event, got ${completions.length}',
+    );
     await sub.cancel();
   });
   await scenario('missing file fails load and reports error', () async {
@@ -285,57 +438,78 @@ Future<void> main() async {
     }
     await sub.cancel();
     require(
-        failure is PlayerException, 'Expected PlayerException, got $failure');
+      failure is PlayerException,
+      'Expected PlayerException, got $failure',
+    );
     require(errors.isNotEmpty, 'errorStream received no error');
   });
   for (final before in [true, false]) {
     await scenario(
-        'loop all ${before ? 'before' : 'after'} load visits both items',
-        () async {
-      final p = await newPlayer();
-      if (before) await p.setLoopMode(LoopMode.all);
-      await p.setAudioSources(
-          [AudioSource.uri(_shortWav.uri), AudioSource.uri(_shortWav.uri)]);
-      if (!before) await p.setLoopMode(LoopMode.all);
-      final indices = <int?>[];
-      final sub = p.currentIndexStream.distinct().listen(indices.add);
-      unawaited(p.play());
-      try {
-        await eventually(() => indices.length >= 3,
-            'loop did not visit both tracks and return: $indices');
-        require(indices.take(3).join(',') == '0,1,0',
-            'Wrong loop sequence $indices');
-      } finally {
-        await sub.cancel();
-      }
-    });
+      'loop all ${before ? 'before' : 'after'} load visits both items',
+      () async {
+        final p = await newPlayer();
+        if (before) await p.setLoopMode(LoopMode.all);
+        await p.setAudioSources([
+          AudioSource.uri(_shortWav.uri),
+          AudioSource.uri(_shortWav.uri),
+        ]);
+        if (!before) await p.setLoopMode(LoopMode.all);
+        final indices = <int?>[];
+        final sub = p.currentIndexStream.distinct().listen(indices.add);
+        unawaited(p.play());
+        try {
+          await eventually(
+            () => indices.length >= 3,
+            'loop did not visit both tracks and return: $indices',
+          );
+          require(
+            indices.take(3).join(',') == '0,1,0',
+            'Wrong loop sequence $indices',
+          );
+        } finally {
+          await sub.cancel();
+        }
+      },
+    );
   }
   await scenario('nested playlist loads and advances', () async {
     final p = await newPlayer();
     // ignore: deprecated_member_use
-    final nested = ConcatenatingAudioSource(children: [
-      AudioSource.uri(_shortWav.uri),
-      AudioSource.uri(_shortWav.uri)
-    ]);
+    final nested = ConcatenatingAudioSource(
+      children: [
+        AudioSource.uri(_shortWav.uri),
+        AudioSource.uri(_shortWav.uri),
+      ],
+    );
     await p.setAudioSource(nested);
     unawaited(p.play());
     await eventually(
-        () => p.currentIndex == 1, 'nested playlist did not advance');
+      () => p.currentIndex == 1,
+      'nested playlist did not advance',
+    );
   });
   await scenario('initial index and position, seek to zero', () async {
     final p = await newPlayer();
     await p.setAudioSources(
-        [AudioSource.uri(_shortWav.uri), AudioSource.uri(_longWav.uri)],
-        initialIndex: 1, initialPosition: const Duration(seconds: 1));
+      [AudioSource.uri(_shortWav.uri), AudioSource.uri(_longWav.uri)],
+      initialIndex: 1,
+      initialPosition: const Duration(seconds: 1),
+    );
     require(p.currentIndex == 1, 'Wrong initial index ${p.currentIndex}');
-    require((p.position.inMilliseconds - 1000).abs() < 100,
-        'Wrong initial position ${p.position}');
+    require(
+      (p.position.inMilliseconds - 1000).abs() < 100,
+      'Wrong initial position ${p.position}',
+    );
     await p.seek(const Duration(seconds: 2), index: 1);
     await eventually(
-        () => (p.position.inMilliseconds - 2000).abs() < 100, 'seek 2s failed');
+      () => (p.position.inMilliseconds - 2000).abs() < 100,
+      'seek 2s failed',
+    );
     await p.seek(Duration.zero, index: 1);
     await eventually(
-        () => p.position.inMilliseconds < 100, 'same-index zero seek failed');
+      () => p.position.inMilliseconds < 100,
+      'same-index zero seek failed',
+    );
   });
   await scenario('cross-item seek applies requested position', () async {
     final p = await newPlayer();
@@ -345,162 +519,203 @@ Future<void> main() async {
       AudioSource.uri(_longWav.uri),
     ]);
     unawaited(p.play());
-    await eventually(() => p.position > const Duration(milliseconds: 50),
-        'first item did not start');
+    await eventually(
+      () => p.position > const Duration(milliseconds: 50),
+      'first item did not start',
+    );
     // Target never opened yet: the pending position must survive the move.
     await p.seek(const Duration(seconds: 1), index: 1);
     await eventually(() => p.currentIndex == 1, 'seek to next index failed');
-    await eventually(() => (p.position.inMilliseconds - 1000).abs() < 250,
-        'position lost on cross-item seek: ${p.position}');
+    await eventually(
+      () => (p.position.inMilliseconds - 1000).abs() < 250,
+      'position lost on cross-item seek: ${p.position}',
+    );
     // Target already played and kept open: the prefetched path.
     await p.seek(const Duration(milliseconds: 200), index: 0);
     await eventually(() => p.currentIndex == 0, 'seek back failed');
-    await eventually(() => (p.position.inMilliseconds - 200).abs() < 250,
-        'position lost seeking back to open item: ${p.position}');
+    await eventually(
+      () => (p.position.inMilliseconds - 200).abs() < 250,
+      'position lost seeking back to open item: ${p.position}',
+    );
   });
   await scenario(
-      'a seek back to a kept-open item lands physically and stays', () async {
-    // The keep-open window never re-fires MediaOpened for an already-open
-    // target, so a seek that defers to it would only be *reported* (the
-    // fake position) for its 2s window and then silently revert. This pins
-    // the physical application: a paused player asked to seek back to an
-    // open item at 2s must still report exactly 2s after the deadline.
-    final p = RawPlayer('seek-open-paused');
-    await p.init();
-    try {
-      await p.call('load', {
-        'audioSource': playlist(
-            'root', [leaf('a', _longWav.uri), leaf('b', _longWav.uri)], [0, 1]),
-        'initialIndex': 0,
-        'initialPosition': 0,
-      });
-      unawaited(p.call('play'));
-      var playing = await p.sample();
-      while ((playing['updatePosition'] as int? ?? 0) < 150000) {
-        await Future<void>.delayed(const Duration(milliseconds: 120));
-        playing = await p.sample();
-      }
-      await p.call('pause');
-      await p.call('seek', {'index': 1, 'position': 1000000});
-      var settled = await p.sample();
-      require(settled['currentIndex'] == 1,
-          'paused cross-item seek never switched item: $settled');
-      await p.call('seek', {'index': 0, 'position': 2000000});
-      settled = await p.sample();
-      require(settled['currentIndex'] == 0, 'seek-back item wrong: $settled');
-      // Past the 2s fake-position deadline: the truth must still be 2s.
-      await Future<void>.delayed(const Duration(milliseconds: 2600));
-      final after = await p.sample();
-      require((after['updatePosition'] as int? ?? -1) == 2000000,
-          'position regressed to ${after['updatePosition']}us after the '
-          'deadline - the physical seek did not stick: $after');
-    } finally {
-      await p.dispose();
-    }
-  });
-  await scenario('a rapid cross-item scrub resumes from the final target',
-      () async {
-    // Back-to-back seeks across items are what a user dragging a scrub bar
-    // produces. The last requested (index, position) must be the one that
-    // lands, and playback must continue from it rather than stalling.
-    final p = RawPlayer('scrub-rapid');
-    await p.init();
-    try {
-      await p.call('load', {
-        'audioSource': playlist('root', [
-          leaf('a', _sixWav.uri),
-          leaf('b', _sixWav.uri),
-          leaf('c', _sixWav.uri),
-        ], [0, 1, 2]),
-        'initialIndex': 0,
-        'initialPosition': 0,
-      });
-      unawaited(p.call('play'));
-      var playing = await p.sample();
-      while ((playing['updatePosition'] as int? ?? 0) < 50000) {
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        playing = await p.sample();
-      }
-      await p.call('seek', {'index': 1, 'position': 500000});
-      await p.call('seek', {'index': 2, 'position': 1500000});
-      await p.call('seek', {'index': 0, 'position': 200000});
-      await p.call('seek', {'index': 2, 'position': 4000000});
-      var settled = await p.sample();
-      final watch = Stopwatch()..start();
-      while ((settled['updatePosition'] as int? ?? 0) < 4300000) {
-        require(watch.elapsed < const Duration(seconds: 6),
-            'scrub never settled on item 2 @ >=4.3s: $settled');
-        require(settled['currentIndex'] == 2,
-            'scrub left the final target item: $settled');
-        await Future<void>.delayed(const Duration(milliseconds: 150));
+    'a seek back to a kept-open item lands physically and stays',
+    () async {
+      // The keep-open window never re-fires MediaOpened for an already-open
+      // target, so a seek that defers to it would only be *reported* (the
+      // fake position) for its 2s window and then silently revert. This pins
+      // the physical application: a paused player asked to seek back to an
+      // open item at 2s must still report exactly 2s after the deadline.
+      final p = RawPlayer('seek-open-paused');
+      await p.init();
+      try {
+        await p.call('load', {
+          'audioSource': playlist(
+            'root',
+            [leaf('a', _longWav.uri), leaf('b', _longWav.uri)],
+            [0, 1],
+          ),
+          'initialIndex': 0,
+          'initialPosition': 0,
+        });
+        unawaited(p.call('play'));
+        var playing = await p.sample();
+        while ((playing['updatePosition'] as int? ?? 0) < 150000) {
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          playing = await p.sample();
+        }
+        await p.call('pause');
+        await p.call('seek', {'index': 1, 'position': 1000000});
+        var settled = await p.sample();
+        require(
+          settled['currentIndex'] == 1,
+          'paused cross-item seek never switched item: $settled',
+        );
+        await p.call('seek', {'index': 0, 'position': 2000000});
         settled = await p.sample();
+        require(settled['currentIndex'] == 0, 'seek-back item wrong: $settled');
+        // Past the 2s fake-position deadline: the truth must still be 2s.
+        await Future<void>.delayed(const Duration(milliseconds: 2600));
+        final after = await p.sample();
+        require(
+          (after['updatePosition'] as int? ?? -1) == 2000000,
+          'position regressed to ${after['updatePosition']}us after the '
+          'deadline - the physical seek did not stick: $after',
+        );
+      } finally {
+        await p.dispose();
       }
-      // It must keep progressing from 4s, not restart or stall.
-      final previous = settled;
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      final after = await p.sample();
-      require((after['updatePosition'] as int) >
-          (previous['updatePosition'] as int) + 100000,
-          'playback did not continue after the scrub: $previous -> $after');
-    } finally {
-      await p.dispose();
-    }
-  });
-  await scenario('a seek still lands after reordering shifted the current item',
-      () async {
-    // Moving a different item in front of the playing one shifts the current
-    // item's index. MoveTo targets the same item object, which does not fire
-    // CurrentItemChanged — so a seek deferred onto that arm would wait for an
-    // event that never comes. This pins that the arm is consumed and a
-    // subsequent same-item seek still lands physically.
-    final p = RawPlayer('seek-after-reorder');
-    await p.init();
-    try {
-      await p.call('load', {
-        'audioSource': playlist('root', [
-          leaf('a', _sixWav.uri),
-          leaf('b', _sixWav.uri),
-          leaf('c', _sixWav.uri),
-        ], [0, 1, 2]),
-        'initialIndex': 2,
-        'initialPosition': 0,
-      });
-      unawaited(p.call('play'));
-      var playing = await p.sample();
-      while ((playing['updatePosition'] as int? ?? 0) < 100000) {
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-        playing = await p.sample();
+    },
+  );
+  await scenario(
+    'a rapid cross-item scrub resumes from the final target',
+    () async {
+      // Back-to-back seeks across items are what a user dragging a scrub bar
+      // produces. The last requested (index, position) must be the one that
+      // lands, and playback must continue from it rather than stalling.
+      final p = RawPlayer('scrub-rapid');
+      await p.init();
+      try {
+        await p.call('load', {
+          'audioSource': playlist(
+            'root',
+            [
+              leaf('a', _sixWav.uri),
+              leaf('b', _sixWav.uri),
+              leaf('c', _sixWav.uri),
+            ],
+            [0, 1, 2],
+          ),
+          'initialIndex': 0,
+          'initialPosition': 0,
+        });
+        unawaited(p.call('play'));
+        var playing = await p.sample();
+        while ((playing['updatePosition'] as int? ?? 0) < 50000) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          playing = await p.sample();
+        }
+        await p.call('seek', {'index': 1, 'position': 500000});
+        await p.call('seek', {'index': 2, 'position': 1500000});
+        await p.call('seek', {'index': 0, 'position': 200000});
+        await p.call('seek', {'index': 2, 'position': 4000000});
+        var settled = await p.sample();
+        final watch = Stopwatch()..start();
+        while ((settled['updatePosition'] as int? ?? 0) < 4300000) {
+          require(
+            watch.elapsed < const Duration(seconds: 6),
+            'scrub never settled on item 2 @ >=4.3s: $settled',
+          );
+          require(
+            settled['currentIndex'] == 2,
+            'scrub left the final target item: $settled',
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          settled = await p.sample();
+        }
+        // It must keep progressing from 4s, not restart or stall.
+        final previous = settled;
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        final after = await p.sample();
+        require(
+          (after['updatePosition'] as int) >
+              (previous['updatePosition'] as int) + 100000,
+          'playback did not continue after the scrub: $previous -> $after',
+        );
+      } finally {
+        await p.dispose();
       }
-      require(playing['currentIndex'] == 2,
-          'item 2 never became current: $playing');
-      // Move item 1 (b) to index 2: the order becomes a, c, b, so the
-      // current item c shifts from index 2 to index 1 without changing
-      // item objects — exactly the same-item MoveTo path being pinned.
-      await p.call('concatenatingMove', {
-        'id': 'root',
-        'currentIndex': 1,
-        'newIndex': 2,
-        'shuffleOrder': [0, 1, 2],
-      });
-      var settled = await p.sample();
-      require(settled['currentIndex'] == 1,
-          'reorder did not shift the current item to 1: $settled');
-      // Now a plain unindexed seek must land and stick. The 6s track leaves
-      // room for the 2.2s wait past the fake-position deadline.
-      await p.call('seek', {'position': 1500000});
-      settled = await p.sample();
-      require((settled['updatePosition'] as int? ?? -1) == 1500000,
-          'seek after reorder did not land: $settled');
-      await Future<void>.delayed(const Duration(milliseconds: 2200));
-      final after = await p.sample();
-      final position = after['updatePosition'] as int? ?? -1;
-      require(position >= 1500000 && position <= 4000000,
+    },
+  );
+  await scenario(
+    'a seek still lands after reordering shifted the current item',
+    () async {
+      // Moving a different item in front of the playing one shifts the current
+      // item's index. MoveTo targets the same item object, which does not fire
+      // CurrentItemChanged — so a seek deferred onto that arm would wait for an
+      // event that never comes. This pins that the arm is consumed and a
+      // subsequent same-item seek still lands physically.
+      final p = RawPlayer('seek-after-reorder');
+      await p.init();
+      try {
+        await p.call('load', {
+          'audioSource': playlist(
+            'root',
+            [
+              leaf('a', _sixWav.uri),
+              leaf('b', _sixWav.uri),
+              leaf('c', _sixWav.uri),
+            ],
+            [0, 1, 2],
+          ),
+          'initialIndex': 2,
+          'initialPosition': 0,
+        });
+        unawaited(p.call('play'));
+        var playing = await p.sample();
+        while ((playing['updatePosition'] as int? ?? 0) < 100000) {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          playing = await p.sample();
+        }
+        require(
+          playing['currentIndex'] == 2,
+          'item 2 never became current: $playing',
+        );
+        // Move item 1 (b) to index 2: the order becomes a, c, b, so the
+        // current item c shifts from index 2 to index 1 without changing
+        // item objects — exactly the same-item MoveTo path being pinned.
+        await p.call('concatenatingMove', {
+          'id': 'root',
+          'currentIndex': 1,
+          'newIndex': 2,
+          'shuffleOrder': [0, 1, 2],
+        });
+        var settled = await p.sample();
+        require(
+          settled['currentIndex'] == 1,
+          'reorder did not shift the current item to 1: $settled',
+        );
+        // Now a plain unindexed seek must land and stick. The 6s track leaves
+        // room for the 2.2s wait past the fake-position deadline.
+        await p.call('seek', {'position': 1500000});
+        settled = await p.sample();
+        require(
+          (settled['updatePosition'] as int? ?? -1) == 1500000,
+          'seek after reorder did not land: $settled',
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 2200));
+        final after = await p.sample();
+        final position = after['updatePosition'] as int? ?? -1;
+        require(
+          position >= 1500000 && position <= 4000000,
           'position ${position}us regressed or stalled after the '
-          'post-reorder seek: $after');
-    } finally {
-      await p.dispose();
-    }
-  });
+          'post-reorder seek: $after',
+        );
+      } finally {
+        await p.dispose();
+      }
+    },
+  );
   await scenario('removing the playing item advances playback', () async {
     // just_audio on Android advances to the item that shifts into the
     // removed item's position. Without that, the list reports no current
@@ -509,11 +724,15 @@ Future<void> main() async {
     await p.init();
     try {
       await p.call('load', {
-        'audioSource': playlist('root', [
-          leaf('a', _longWav.uri),
-          leaf('b', _longWav.uri),
-          leaf('c', _longWav.uri),
-        ], [0, 1, 2]),
+        'audioSource': playlist(
+          'root',
+          [
+            leaf('a', _longWav.uri),
+            leaf('b', _longWav.uri),
+            leaf('c', _longWav.uri),
+          ],
+          [0, 1, 2],
+        ),
         'initialIndex': 0,
         'initialPosition': 0,
       });
@@ -542,91 +761,107 @@ Future<void> main() async {
           break;
         }
       }
-      require(advanced,
-          'playback wedged after removing the current item: $lastSample');
+      require(
+        advanced,
+        'playback wedged after removing the current item: $lastSample',
+      );
       await p.call('pause');
     } finally {
       await p.dispose();
     }
   });
-  await scenario('insert into empty playlist attaches source and plays',
-      () async {
-    final p = await newPlayer();
-    // ignore: deprecated_member_use
-    final playlist = ConcatenatingAudioSource(children: []);
-    await p.setAudioSource(playlist);
-    await playlist.add(AudioSource.uri(_shortWav.uri));
-    unawaited(p.play());
-    await eventually(
+  await scenario(
+    'insert into empty playlist attaches source and plays',
+    () async {
+      final p = await newPlayer();
+      // ignore: deprecated_member_use
+      final playlist = ConcatenatingAudioSource(children: []);
+      await p.setAudioSource(playlist);
+      await playlist.add(AudioSource.uri(_shortWav.uri));
+      unawaited(p.play());
+      await eventually(
         () => p.processingState == ProcessingState.completed,
         'inserted item never played: '
-        'state=${p.processingState} position=${p.position}');
-  });
+        'state=${p.processingState} position=${p.position}',
+      );
+    },
+  );
   await scenario('seek without loaded source is a safe no-op', () async {
     final p = RawPlayer('seek-empty');
     await p.init();
     try {
       final unindexed = await caught(p.call('seek', {'position': 500000}));
-      require(unindexed == null,
-          'unindexed seek on empty player errored: $unindexed');
-      final indexed = await caught(p.call('seek', {
-        'index': 0,
-        'position': 0,
-      }));
-      require(indexed is PlatformException,
-          'indexed seek on empty player must be rejected: $indexed');
+      require(
+        unindexed == null,
+        'unindexed seek on empty player errored: $unindexed',
+      );
+      final indexed = await caught(p.call('seek', {'index': 0, 'position': 0}));
+      require(
+        indexed is PlatformException,
+        'indexed seek on empty player must be rejected: $indexed',
+      );
     } finally {
       await p.dispose();
     }
   });
-  await scenario('an invalid load is rejected without disturbing playback',
-      () async {
-    // An out-of-range initialIndex must be reported as an argument error and
-    // must leave the currently playing source alone, rather than tearing the
-    // engine down through the failure path.
-    final p = await newPlayer();
-    await p.setFilePath(_longWav.path);
-    unawaited(p.play());
-    await eventually(() => p.position > const Duration(milliseconds: 100),
-        'playback never started');
+  await scenario(
+    'an invalid load is rejected without disturbing playback',
+    () async {
+      // An out-of-range initialIndex must be reported as an argument error and
+      // must leave the currently playing source alone, rather than tearing the
+      // engine down through the failure path.
+      final p = await newPlayer();
+      await p.setFilePath(_longWav.path);
+      unawaited(p.play());
+      await eventually(
+        () => p.position > const Duration(milliseconds: 100),
+        'playback never started',
+      );
 
-    final raw = RawPlayer('load-validation');
-    await raw.init();
-    try {
-      for (final request in <(String, Map<String, Object?>)>[
-        (
-          'load',
-          {
-            'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
-            'initialIndex': 5,
-          }
-        ),
-        (
-          'load',
-          {
-            'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
-            'initialPosition': -1,
-          }
-        ),
-        ('load', <String, Object?>{'audioSource': 42}),
-      ]) {
-        final failure = await caught(raw.call(request.$1, request.$2));
-        require(failure is PlatformException,
-            '${request.$1} accepted invalid input: $failure');
-        require((failure as PlatformException).code == 'argument_error',
-            '${request.$1} reported ${failure.code}, not argument_error');
+      final raw = RawPlayer('load-validation');
+      await raw.init();
+      try {
+        for (final request in <(String, Map<String, Object?>)>[
+          (
+            'load',
+            {
+              'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
+              'initialIndex': 5,
+            },
+          ),
+          (
+            'load',
+            {
+              'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
+              'initialPosition': -1,
+            },
+          ),
+          ('load', <String, Object?>{'audioSource': 42}),
+        ]) {
+          final failure = await caught(raw.call(request.$1, request.$2));
+          require(
+            failure is PlatformException,
+            '${request.$1} accepted invalid input: $failure',
+          );
+          require(
+            (failure as PlatformException).code == 'argument_error',
+            '${request.$1} reported ${failure.code}, not argument_error',
+          );
+        }
+      } finally {
+        await raw.dispose();
       }
-    } finally {
-      await raw.dispose();
-    }
 
-    // The first player is untouched by another player's rejected load.
-    final before = p.position;
-    await Future<void>.delayed(const Duration(milliseconds: 250));
-    require(p.position > before,
-        'a rejected load on another player stopped this one at $before');
-    await p.pause();
-  });
+      // The first player is untouched by another player's rejected load.
+      final before = p.position;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      require(
+        p.position > before,
+        'a rejected load on another player stopped this one at $before',
+      );
+      await p.pause();
+    },
+  );
   await scenario('buffered position stays within the duration', () async {
     // Invariant guard. An app draws its buffer bar from bufferedPosition, so a
     // value above the duration would overshoot the track end. Read from the raw
@@ -652,59 +887,69 @@ Future<void> main() async {
       for (final event in withDuration) {
         final buffered = event['bufferedPosition'] as int;
         final duration = event['duration'] as int;
-        require(buffered <= duration,
-            'bufferedPosition $buffered exceeds duration $duration');
+        require(
+          buffered <= duration,
+          'bufferedPosition $buffered exceeds duration $duration',
+        );
         require(buffered >= 0, 'bufferedPosition $buffered is negative');
       }
     } finally {
       await p.dispose();
     }
   });
-  await scenario('a play after a failed load cannot resurrect the old source',
-      () async {
-    // A replacement load whose item cannot even construct (a relative URI
-    // that WinRT rejects) fails while the OLD source is still attached.
-    // Fail() must detach it: a play() pressed on the failed engine must not
-    // bring the old track back while Dart believes the player is idle.
-    final p = RawPlayer('failed-resurrection');
-    await p.init();
-    try {
-      await p.call('load', {
-        'audioSource': leaf('a', _longWav.uri),
-        'initialIndex': 0,
-        'initialPosition': 0,
-      });
-      unawaited(p.call('play').then((_){}, onError: (_){}));
-      var playing = await p.sample();
-      while ((playing['updatePosition'] as int? ?? 0) < 120000) {
-        await Future<void>.delayed(const Duration(milliseconds: 120));
-        playing = await p.sample();
-      }
-      final failure = await caught(p.call('load', {
-        'audioSource': leaf('bad', Uri.parse('not-an-absolute-uri')),
-      }));
-      require(failure is PlatformException,
-          'malformed replacement load did not fail: $failure');
-      require(
+  await scenario(
+    'a play after a failed load cannot resurrect the old source',
+    () async {
+      // A replacement load whose item cannot even construct (a relative URI
+      // that WinRT rejects) fails while the OLD source is still attached.
+      // Fail() must detach it: a play() pressed on the failed engine must not
+      // bring the old track back while Dart believes the player is idle.
+      final p = RawPlayer('failed-resurrection');
+      await p.init();
+      try {
+        await p.call('load', {
+          'audioSource': leaf('a', _longWav.uri),
+          'initialIndex': 0,
+          'initialPosition': 0,
+        });
+        unawaited(p.call('play').then((_) {}, onError: (_) {}));
+        var playing = await p.sample();
+        while ((playing['updatePosition'] as int? ?? 0) < 120000) {
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          playing = await p.sample();
+        }
+        final failure = await caught(
+          p.call('load', {
+            'audioSource': leaf('bad', Uri.parse('not-an-absolute-uri')),
+          }),
+        );
+        require(
+          failure is PlatformException,
+          'malformed replacement load did not fail: $failure',
+        );
+        require(
           p.events.any((e) => e['errorCode'] == 1),
-          'engine did not report the failure in-band: ${p.events.last}');
-      // Dart presses play on the failed engine: the request settles, but no
-      // audio may return. The position must stay frozen across the probes.
-      unawaited(p.call('play').then((_){}, onError: (_){}));
-      final frozen = await p.sample();
-      final frozenPosition = frozen['updatePosition'] as int;
-      for (var i = 0; i < 3; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-        final after = await p.sample();
-        require((after['updatePosition'] as int) == frozenPosition,
-            'audio resurrected after a failed load: $frozen -> $after');
+          'engine did not report the failure in-band: ${p.events.last}',
+        );
+        // Dart presses play on the failed engine: the request settles, but no
+        // audio may return. The position must stay frozen across the probes.
+        unawaited(p.call('play').then((_) {}, onError: (_) {}));
+        final frozen = await p.sample();
+        final frozenPosition = frozen['updatePosition'] as int;
+        for (var i = 0; i < 3; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          final after = await p.sample();
+          require(
+            (after['updatePosition'] as int) == frozenPosition,
+            'audio resurrected after a failed load: $frozen -> $after',
+          );
+        }
+      } finally {
+        await p.dispose();
       }
-    } finally {
-      await p.dispose();
-    }
-  });
-  await scenario('a play with no source stays pending, as just_audio expects',
-      () async {
+    },
+  );
+  await scenario('a play with no source stays pending, as just_audio expects', () async {
     // just_audio's platform activation sends `play` before `load`, so a play
     // that arrives with nothing attached must NOT be settled: resolving it
     // would return from `await player.play()` before the track even starts.
@@ -715,8 +960,10 @@ Future<void> main() async {
       var completed = false;
       final play = p.call('play').then((_) => completed = true);
       await Future<void>.delayed(const Duration(milliseconds: 300));
-      require(!completed,
-          'a source-less play must stay pending, got $completed');
+      require(
+        !completed,
+        'a source-less play must stay pending, got $completed',
+      );
       // A load still cannot rescue a source-less play on its own: the play was
       // issued before any source existed, so only an explicit pause settles it.
       await p.call('pause').timeout(const Duration(seconds: 3));
@@ -731,44 +978,61 @@ Future<void> main() async {
     await p.init();
     try {
       await p.call('load', {
-        'audioSource':
-            playlist('root', [leaf('a'), leaf('b'), leaf('c')], [0, 1, 2]),
+        'audioSource': playlist(
+          'root',
+          [leaf('a'), leaf('b'), leaf('c')],
+          [0, 1, 2],
+        ),
         'initialIndex': 2,
         'initialPosition': 0,
       });
       await p.call('play').timeout(const Duration(seconds: 6));
-      final indices =
-          p.events.map((e) => e['currentIndex']).whereType<int>().toList();
+      final indices = p.events
+          .map((e) => e['currentIndex'])
+          .whereType<int>()
+          .toList();
       require(indices.isNotEmpty, 'no index events were received');
-      require(indices.every((i) => i == 2),
-          'spurious indices observed before settle: $indices');
+      require(
+        indices.every((i) => i == 2),
+        'spurious indices observed before settle: $indices',
+      );
     } finally {
       await p.dispose();
     }
   });
   await scenario('clipped duration and EOF', () async {
     final p = await newPlayer();
-    await p.setAudioSource(ClippingAudioSource(
+    await p.setAudioSource(
+      ClippingAudioSource(
         child: AudioSource.uri(_longWav.uri),
         start: const Duration(seconds: 1),
-        end: const Duration(seconds: 2)));
-    require(p.duration == const Duration(seconds: 1),
-        'Wrong clipped duration ${p.duration}');
+        end: const Duration(seconds: 2),
+      ),
+    );
+    require(
+      p.duration == const Duration(seconds: 1),
+      'Wrong clipped duration ${p.duration}',
+    );
     unawaited(p.play());
-    await eventually(() => p.processingState == ProcessingState.completed,
-        'clip did not finish');
-    require(p.position == const Duration(seconds: 1),
-        'Wrong clip end ${p.position}');
+    await eventually(
+      () => p.processingState == ProcessingState.completed,
+      'clip did not finish',
+    );
+    require(
+      p.position == const Duration(seconds: 1),
+      'Wrong clip end ${p.position}',
+    );
   });
   await scenario('unsupported methods report failure', () async {
     const root = MethodChannel('com.ryanheise.just_audio.methods');
-    const channel =
-        MethodChannel('com.ryanheise.just_audio.methods.unsupported-test');
+    const channel = MethodChannel(
+      'com.ryanheise.just_audio.methods.unsupported-test',
+    );
     await root.invokeMethod<void>('init', {'id': 'unsupported-test'});
     try {
       for (final request in <String, Map<String, Object>>{
         'setPitch': {'pitch': 1.5},
-        'setSkipSilence': {'enabled': true}
+        'setSkipSilence': {'enabled': true},
       }.entries) {
         Object? error;
         try {
@@ -776,12 +1040,15 @@ Future<void> main() async {
         } catch (e) {
           error = e;
         }
-        require(error is PlatformException || error is MissingPluginException,
-            '${request.key} falsely succeeded');
+        require(
+          error is PlatformException || error is MissingPluginException,
+          '${request.key} falsely succeeded',
+        );
       }
     } finally {
-      await root
-          .invokeMethod<void>('disposePlayer', {'id': 'unsupported-test'});
+      await root.invokeMethod<void>('disposePlayer', {
+        'id': 'unsupported-test',
+      });
     }
   });
   await scenario('independent players', () async {
@@ -792,31 +1059,42 @@ Future<void> main() async {
     unawaited(a.play());
     unawaited(b.play());
     await eventually(
-        () => b.position.inMilliseconds > 100, 'second player did not start');
+      () => b.position.inMilliseconds > 100,
+      'second player did not start',
+    );
     await a.pause();
     final pos = b.position;
-    await eventually(() => b.position > pos + const Duration(milliseconds: 100),
-        'pausing first stopped second');
+    await eventually(
+      () => b.position > pos + const Duration(milliseconds: 100),
+      'pausing first stopped second',
+    );
   });
-  await scenario('initial shuffle order matches automatic progression',
-      () async {
-    final p = await newPlayer();
-    await p.setShuffleModeEnabled(true);
-    await p.setAudioSources(
+  await scenario(
+    'initial shuffle order matches automatic progression',
+    () async {
+      final p = await newPlayer();
+      await p.setShuffleModeEnabled(true);
+      await p.setAudioSources(
         List.generate(3, (_) => AudioSource.uri(_shortWav.uri)),
-        shuffleOrder: ReverseShuffle());
-    final indices = <int?>[];
-    final sub = p.currentIndexStream.distinct().listen(indices.add);
-    try {
-      unawaited(p.play());
-      await eventually(() => p.processingState == ProcessingState.completed,
-          'shuffle did not finish');
-      require(
-          indices.join(',') == '0,2,1', 'Expected 0,2,1, observed $indices');
-    } finally {
-      await sub.cancel();
-    }
-  });
+        shuffleOrder: ReverseShuffle(),
+      );
+      final indices = <int?>[];
+      final sub = p.currentIndexStream.distinct().listen(indices.add);
+      try {
+        unawaited(p.play());
+        await eventually(
+          () => p.processingState == ProcessingState.completed,
+          'shuffle did not finish',
+        );
+        require(
+          indices.join(',') == '0,2,1',
+          'Expected 0,2,1, observed $indices',
+        );
+      } finally {
+        await sub.cancel();
+      }
+    },
+  );
   await scenario('shuffle mode off plays the natural order', () async {
     // just_audio shuffles the source order at load time regardless of the
     // shuffle mode, so the native engine receives a permuted `shuffleOrder`
@@ -825,17 +1103,22 @@ Future<void> main() async {
     // playlist plays in the wrong order.
     final p = await newPlayer();
     await p.setAudioSources(
-        List.generate(3, (_) => AudioSource.uri(_shortWav.uri)),
-        shuffleOrder: ReverseShuffle());
+      List.generate(3, (_) => AudioSource.uri(_shortWav.uri)),
+      shuffleOrder: ReverseShuffle(),
+    );
     require(!p.shuffleModeEnabled, 'shuffle must be off for this scenario');
     final indices = <int?>[];
     final sub = p.currentIndexStream.distinct().listen(indices.add);
     try {
       unawaited(p.play());
-      await eventually(() => p.processingState == ProcessingState.completed,
-          'playback did not finish');
-      require(indices.join(',') == '0,1,2',
-          'Expected natural order 0,1,2 with shuffle off, observed $indices');
+      await eventually(
+        () => p.processingState == ProcessingState.completed,
+        'playback did not finish',
+      );
+      require(
+        indices.join(',') == '0,1,2',
+        'Expected natural order 0,1,2 with shuffle off, observed $indices',
+      );
     } finally {
       await sub.cancel();
     }
@@ -849,8 +1132,7 @@ Future<void> main() async {
     var completed = false;
     final play = p.play().then((_) => completed = true);
     await Future<void>.delayed(const Duration(milliseconds: 300));
-    require(!completed,
-        'play() resolved before the track ended: $completed');
+    require(!completed, 'play() resolved before the track ended: $completed');
     await play.timeout(const Duration(seconds: 8));
     require(completed, 'the play future never completed');
   });
@@ -866,19 +1148,25 @@ Future<void> main() async {
       ]);
       if (shuffle) await p.setShuffleModeEnabled(true);
       unawaited(p.play());
-      await eventually(() => p.position > const Duration(milliseconds: 100),
-          'playback never started (shuffle=$shuffle)');
+      await eventually(
+        () => p.position > const Duration(milliseconds: 100),
+        'playback never started (shuffle=$shuffle)',
+      );
       if (shuffle) {
         await p.setLoopMode(LoopMode.all);
       } else {
         await p.setShuffleModeEnabled(true);
         await p.setShuffleModeEnabled(false);
       }
-      require(p.currentIndex == 0,
-          'mode change jumped to index ${p.currentIndex} (shuffle=$shuffle)');
-      require(p.position > Duration.zero,
-          'mode change rewound the position to ${p.position} '
-          '(shuffle=$shuffle)');
+      require(
+        p.currentIndex == 0,
+        'mode change jumped to index ${p.currentIndex} (shuffle=$shuffle)',
+      );
+      require(
+        p.position > Duration.zero,
+        'mode change rewound the position to ${p.position} '
+        '(shuffle=$shuffle)',
+      );
       await p.pause();
     }
   });
@@ -905,159 +1193,198 @@ Future<void> main() async {
       await p.call('setSpeed', {'speed': 1.25});
       await Future<void>.delayed(const Duration(milliseconds: 100));
       await sub.cancel();
-      require(seen.isNotEmpty,
-          'a late subscriber received nothing; volume would look unchanged');
-      require(seen.last['volume'] == 0.25,
-          'late subscriber got volume ${seen.last['volume']}');
-      require(seen.last['speed'] == 1.25,
-          'late subscriber got speed ${seen.last['speed']}');
-      require(seen.last['playing'] == false,
-          'late subscriber got playing ${seen.last['playing']}');
+      require(
+        seen.isNotEmpty,
+        'a late subscriber received nothing; volume would look unchanged',
+      );
+      require(
+        seen.last['volume'] == 0.25,
+        'late subscriber got volume ${seen.last['volume']}',
+      );
+      require(
+        seen.last['speed'] == 1.25,
+        'late subscriber got speed ${seen.last['speed']}',
+      );
+      require(
+        seen.last['playing'] == false,
+        'late subscriber got playing ${seen.last['playing']}',
+      );
     } finally {
       await p.dispose();
     }
   });
-  await scenario('a shuffle order set while off applies once shuffle is enabled',
-      () async {
-    // `player.shuffle()` sends setShuffleOrder regardless of the mode. With
-    // shuffle off that order must be remembered and applied when shuffling is
-    // turned on, not silently dropped.
-    final p = await newPlayer();
-    await p.setAudioSources(
+  await scenario(
+    'a shuffle order set while off applies once shuffle is enabled',
+    () async {
+      // `player.shuffle()` sends setShuffleOrder regardless of the mode. With
+      // shuffle off that order must be remembered and applied when shuffling is
+      // turned on, not silently dropped.
+      final p = await newPlayer();
+      await p.setAudioSources(
         List.generate(3, (_) => AudioSource.uri(_shortWav.uri)),
-        shuffleOrder: ReverseShuffle());
-    require(!p.shuffleModeEnabled, 'shuffle must start off');
+        shuffleOrder: ReverseShuffle(),
+      );
+      require(!p.shuffleModeEnabled, 'shuffle must start off');
 
-    await p.setShuffleModeEnabled(true);
-    final indices = <int?>[];
-    final sub = p.currentIndexStream.distinct().listen(indices.add);
-    try {
-      unawaited(p.play());
-      await eventually(() => p.processingState == ProcessingState.completed,
-          'playback did not finish');
-      require(indices.join(',') == '0,2,1',
-          'the declared shuffle order was not applied once enabled: $indices');
-    } finally {
-      await sub.cancel();
-    }
-  });
+      await p.setShuffleModeEnabled(true);
+      final indices = <int?>[];
+      final sub = p.currentIndexStream.distinct().listen(indices.add);
+      try {
+        unawaited(p.play());
+        await eventually(
+          () => p.processingState == ProcessingState.completed,
+          'playback did not finish',
+        );
+        require(
+          indices.join(',') == '0,2,1',
+          'the declared shuffle order was not applied once enabled: $indices',
+        );
+      } finally {
+        await sub.cancel();
+      }
+    },
+  );
   await scenario('loop one repeats current track and off completes', () async {
     final p = await newPlayer();
-    await p.setAudioSources(
-        [AudioSource.uri(_shortWav.uri), AudioSource.uri(_shortWav.uri)]);
+    await p.setAudioSources([
+      AudioSource.uri(_shortWav.uri),
+      AudioSource.uri(_shortWav.uri),
+    ]);
     await p.setLoopMode(LoopMode.one);
     unawaited(p.play());
     await Future<void>.delayed(const Duration(milliseconds: 1200));
     require(
-        p.currentIndex == 0 && p.processingState != ProcessingState.completed,
-        'loop-one advanced or completed');
+      p.currentIndex == 0 && p.processingState != ProcessingState.completed,
+      'loop-one advanced or completed',
+    );
     await p.setLoopMode(LoopMode.off);
-    await eventually(() => p.processingState == ProcessingState.completed,
-        'turning loop off did not finish');
+    await eventually(
+      () => p.processingState == ProcessingState.completed,
+      'turning loop off did not finish',
+    );
     require(p.currentIndex == 1, 'loop-off failed to visit second track');
   });
   await scenario('looping source expands finite sequence', () async {
     final p = await newPlayer();
     // ignore: deprecated_member_use
     await p.setAudioSource(
-        // ignore: deprecated_member_use
-        LoopingAudioSource(child: AudioSource.uri(_shortWav.uri), count: 2));
+      // ignore: deprecated_member_use
+      LoopingAudioSource(child: AudioSource.uri(_shortWav.uri), count: 2),
+    );
     final indices = <int?>[];
     final sub = p.currentIndexStream.distinct().listen(indices.add);
     try {
       unawaited(p.play());
-      await eventually(() => p.processingState == ProcessingState.completed,
-          'finite loop did not finish');
-      require(indices.join(',') == '0,1',
-          'Wrong expanded looping sequence $indices');
+      await eventually(
+        () => p.processingState == ProcessingState.completed,
+        'finite loop did not finish',
+      );
+      require(
+        indices.join(',') == '0,1',
+        'Wrong expanded looping sequence $indices',
+      );
     } finally {
       await sub.cancel();
     }
   });
-  await scenario('nested insertion removal and move target source ID',
-      () async {
-    final p = await newPlayer();
-    // ignore: deprecated_member_use
-    final group =
-        // ignore: deprecated_member_use
-        ConcatenatingAudioSource(children: [AudioSource.uri(_longWav.uri)]);
-    await p.setAudioSources([AudioSource.uri(_shortWav.uri), group]);
-    await group.insert(0, AudioSource.uri(_shortWav.uri));
-    await p.seek(Duration.zero, index: 2);
-    await eventually(
-        () => p.currentIndex == 2 && p.duration == const Duration(seconds: 3),
-        'nested insert targeted wrong index');
-    await group.move(1, 0);
-    await p.seek(Duration.zero, index: 1);
-    await eventually(
-        () => p.currentIndex == 1 && p.duration == const Duration(seconds: 3),
-        'nested move lost original item');
-    await group.removeRange(1, 2);
-    require(p.sequence.length == 2, 'wrong Dart sequence after remove');
-    await p.seek(Duration.zero, index: 0);
-    await eventually(() => p.duration == const Duration(milliseconds: 400),
-        'removal corrupted first item');
-  });
   await scenario(
-      'malformed requests return valid errors and leave loaded source usable',
-      () async {
-    final p = RawPlayer('validation');
-    await p.init();
-    try {
-      await p.call('load', {
-        'audioSource': playlist('root', [leaf('a')], [0])
-      });
-      for (final request in <(String, Map<String, Object?>)>[
-        ('setVolume', {'volume': 'bad'}),
-        ('setVolume', {'volume': double.nan}),
-        ('setSpeed', {'speed': -1.0}),
-        ('setLoopMode', {'loopMode': 7}),
-        ('seek', {'index': 1 << 40}),
-        (
-          'concatenatingInsertAll',
-          {
-            'id': 'root',
-            'index': 1,
-            'children': [leaf('b')],
-            'shuffleOrder': [0, 0]
-          }
-        ),
-        (
-          'setShuffleOrder',
-          {
-            'audioSource': playlist('root', [leaf('a')], [3])
-          }
-        ),
-      ]) {
-        final failure = await caught(p.call(request.$1, request.$2));
-        require(failure is PlatformException,
-            '${request.$1} accepted invalid input or invalid error: $failure');
+    'nested insertion removal and move target source ID',
+    () async {
+      final p = await newPlayer();
+      // ignore: deprecated_member_use
+      final group =
+          // ignore: deprecated_member_use
+          ConcatenatingAudioSource(children: [AudioSource.uri(_longWav.uri)]);
+      await p.setAudioSources([AudioSource.uri(_shortWav.uri), group]);
+      await group.insert(0, AudioSource.uri(_shortWav.uri));
+      await p.seek(Duration.zero, index: 2);
+      await eventually(
+        () => p.currentIndex == 2 && p.duration == const Duration(seconds: 3),
+        'nested insert targeted wrong index',
+      );
+      await group.move(1, 0);
+      await p.seek(Duration.zero, index: 1);
+      await eventually(
+        () => p.currentIndex == 1 && p.duration == const Duration(seconds: 3),
+        'nested move lost original item',
+      );
+      await group.removeRange(1, 2);
+      require(p.sequence.length == 2, 'wrong Dart sequence after remove');
+      await p.seek(Duration.zero, index: 0);
+      await eventually(
+        () => p.duration == const Duration(milliseconds: 400),
+        'removal corrupted first item',
+      );
+    },
+  );
+  await scenario(
+    'malformed requests return valid errors and leave loaded source usable',
+    () async {
+      final p = RawPlayer('validation');
+      await p.init();
+      try {
+        await p.call('load', {
+          'audioSource': playlist('root', [leaf('a')], [0]),
+        });
+        for (final request in <(String, Map<String, Object?>)>[
+          ('setVolume', {'volume': 'bad'}),
+          ('setVolume', {'volume': double.nan}),
+          ('setSpeed', {'speed': -1.0}),
+          ('setLoopMode', {'loopMode': 7}),
+          ('seek', {'index': 1 << 40}),
+          (
+            'concatenatingInsertAll',
+            {
+              'id': 'root',
+              'index': 1,
+              'children': [leaf('b')],
+              'shuffleOrder': [0, 0],
+            },
+          ),
+          (
+            'setShuffleOrder',
+            {
+              'audioSource': playlist('root', [leaf('a')], [3]),
+            },
+          ),
+        ]) {
+          final failure = await caught(p.call(request.$1, request.$2));
+          require(
+            failure is PlatformException,
+            '${request.$1} accepted invalid input or invalid error: $failure',
+          );
+        }
+        await p.call('play').timeout(const Duration(seconds: 5));
+        require(
+          p.events.any((e) => e['processingState'] == 4),
+          'invalid mutations corrupted existing source',
+        );
+      } finally {
+        await p.dispose();
       }
-      await p.call('play').timeout(const Duration(seconds: 5));
-      require(p.events.any((e) => e['processingState'] == 4),
-          'invalid mutations corrupted existing source');
-    } finally {
-      await p.dispose();
-    }
-  });
+    },
+  );
   await scenario('unsupported source error preserves UTF-8 message', () async {
     final p = RawPlayer('error-text');
     await p.init();
     try {
-      final error = await caught(p.call('load', {
-        'audioSource': {
-          'id': 'x',
-          'type': 'unsupported-source-with-a-long-owned-message'
-        }
-      }));
+      final error = await caught(
+        p.call('load', {
+          'audioSource': {
+            'id': 'x',
+            'type': 'unsupported-source-with-a-long-owned-message',
+          },
+        }),
+      );
       require(
-          error is PlatformException, 'Expected platform error, got $error');
+        error is PlatformException,
+        'Expected platform error, got $error',
+      );
       require(
-          (error as PlatformException)
-                  .message
-                  ?.contains('unsupported-source') ==
-              true,
-          'error message was lost');
+        (error as PlatformException).message?.contains('unsupported-source') ==
+            true,
+        'error message was lost',
+      );
     } finally {
       await p.dispose();
     }
@@ -1067,13 +1394,13 @@ Future<void> main() async {
     await p.init();
     try {
       await p.call('load', {
-        'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1])
+        'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
       });
       await p.call('concatenatingInsertAll', {
         'id': 'root',
         'index': 2,
         'children': [leaf('c')],
-        'shuffleOrder': [0, 2, 1]
+        'shuffleOrder': [0, 2, 1],
       });
       await p.call('setShuffleMode', {'shuffleMode': 1});
       await p.call('seek', {'index': 0, 'position': 0});
@@ -1086,8 +1413,10 @@ Future<void> main() async {
           indices.add(index);
         }
       }
-      require(indices.join(',') == '0,2,1',
-          'Inserted shuffle order ignored: $indices');
+      require(
+        indices.join(',') == '0,2,1',
+        'Inserted shuffle order ignored: $indices',
+      );
     } finally {
       await p.dispose();
     }
@@ -1109,16 +1438,23 @@ Future<void> main() async {
       final p = await newPlayer();
       final base = 'http://127.0.0.1:${server.port}';
       final duration = await p.setUrl('$base/audio.wav');
-      require(duration == const Duration(milliseconds: 400),
-          'HTTP duration incorrect');
+      require(
+        duration == const Duration(milliseconds: 400),
+        'HTTP duration incorrect',
+      );
       final error = await caught(
-          p.setUrl('$base/missing.wav').timeout(const Duration(seconds: 5)));
-      require(error is PlayerException,
-          'HTTP 404 not reported as PlayerException: $error');
+        p.setUrl('$base/missing.wav').timeout(const Duration(seconds: 5)),
+      );
+      require(
+        error is PlayerException,
+        'HTTP 404 not reported as PlayerException: $error',
+      );
       await p.setFilePath(_shortWav.path);
       await p.play().timeout(const Duration(seconds: 5));
-      require(p.processingState == ProcessingState.completed,
-          'player did not recover from network error');
+      require(
+        p.processingState == ProcessingState.completed,
+        'player did not recover from network error',
+      );
     } finally {
       await server.close(force: true);
     }
@@ -1133,8 +1469,9 @@ Future<void> main() async {
       for (final replace in [false, true]) {
         final p = RawPlayer('pending-$replace');
         await p.init();
-        final pending =
-            caught(p.call('load', {'audioSource': leaf('slow', uri)}));
+        final pending = caught(
+          p.call('load', {'audioSource': leaf('slow', uri)}),
+        );
         await Future<void>.delayed(const Duration(milliseconds: 100));
         if (replace) {
           await p.call('load', {'audioSource': leaf('good')});
@@ -1143,175 +1480,591 @@ Future<void> main() async {
         }
         final error = await pending.timeout(const Duration(seconds: 3));
         require(
-            error is PlatformException, 'Pending load did not abort: $error');
+          error is PlatformException,
+          'Pending load did not abort: $error',
+        );
         if (replace) await p.dispose();
       }
     } finally {
       await server.close(force: true);
     }
   });
-  await scenario('a raw seek issued while the load is pending lands when it opens',
-      () async {
-    // just_audio's Dart side drops a seek() while ProcessingState.loading, so
-    // this exercises the channel contract directly through RawPlayer: a seek
-    // that reaches the engine while the media is still opening must overwrite
-    // the load's deferred initial position, not be clobbered by it when
-    // MediaOpened lands.
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    server.listen((request) async {
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      final bytes = _longWav.readAsBytesSync();
-      request.response.headers.contentType = ContentType('audio', 'wav');
-      request.response.contentLength = bytes.length;
-      request.response.add(bytes);
-      await request.response.close();
-    });
-    RawPlayer? p;
-    try {
-      p = RawPlayer('seek-during-load');
-      await p.init();
-      final player = p;
-      final loading = player.call('load', {
-        'audioSource': leaf('a', Uri.parse('http://127.0.0.1:${server.port}/audio.wav')),
-        'initialIndex': 0,
-        'initialPosition': 0,
+  await scenario(
+    'a raw seek issued while the load is pending lands when it opens',
+    () async {
+      // just_audio's Dart side drops a seek() while ProcessingState.loading, so
+      // this exercises the channel contract directly through RawPlayer: a seek
+      // that reaches the engine while the media is still opening must overwrite
+      // the load's deferred initial position, not be clobbered by it when
+      // MediaOpened lands.
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        final bytes = _longWav.readAsBytesSync();
+        request.response.headers.contentType = ContentType('audio', 'wav');
+        request.response.contentLength = bytes.length;
+        request.response.add(bytes);
+        await request.response.close();
       });
-      await player.call('seek', {'position': 1000000}).timeout(const Duration(seconds: 2));
-      await loading.timeout(const Duration(seconds: 5));
-      await eventually(
+      RawPlayer? p;
+      try {
+        p = RawPlayer('seek-during-load');
+        await p.init();
+        final player = p;
+        final loading = player.call('load', {
+          'audioSource': leaf(
+            'a',
+            Uri.parse('http://127.0.0.1:${server.port}/audio.wav'),
+          ),
+          'initialIndex': 0,
+          'initialPosition': 0,
+        });
+        await player
+            .call('seek', {'position': 1000000})
+            .timeout(const Duration(seconds: 2));
+        await loading.timeout(const Duration(seconds: 5));
+        await eventually(
           () => player.events.any((e) => e['updatePosition'] == 1000000),
           'no event ever reported the seeked position: '
-          '${player.events.map((e) => e['updatePosition']).toList()}');
-      // The position must survive the SeekCompleted handback: the truthful
-      // session position after the seek settles is still the seeked one, not
-      // the load's initial zero.
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      require(player.events.last['updatePosition'] == 1000000,
-          'position snapped back after the seek: ${player.events.last}');
-    } finally {
-      await p?.dispose();
-      await server.close(force: true);
-    }
-  });
-  await scenario('the requested initial position is reported while loading',
-      () async {
-    // The engine defers the initial position to the open, but the loading
-    // broadcasts must report the requested position rather than a transient
-    // 0 - otherwise a seek bar visibly jumps from 0 when the item opens.
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    server.listen((request) async {
-      await Future<void>.delayed(const Duration(milliseconds: 700));
-      final bytes = _longWav.readAsBytesSync();
-      request.response.headers.contentType = ContentType('audio', 'wav');
-      request.response.contentLength = bytes.length;
-      request.response.add(bytes);
-      await request.response.close();
-    });
-    final p = RawPlayer('initial-position-loading');
-    try {
-      await p.init();
-      final loading = p.call('load', {
-        'audioSource':
-            leaf('a', Uri.parse('http://127.0.0.1:${server.port}/audio.wav')),
-        'initialIndex': 0,
-        'initialPosition': 1200000,
-      });
-      await Future<void>.delayed(const Duration(milliseconds: 250));
-      final duringLoad = p.events
-          .where((e) => e['processingState'] == 1)
-          .map((e) => e['updatePosition'])
-          .toList();
-      await loading.timeout(const Duration(seconds: 5));
-      require(duringLoad.isNotEmpty, 'no loading-state events observed');
-      require(duringLoad.every((pos) => pos == 1200000),
-          'loading events reported $duringLoad, expected all 1200000');
-    } finally {
-      await p.dispose();
-      await server.close(force: true);
-    }
-  });
-  await scenario('rapid pause play seek toggling never fights the user intent',
-      () async {
-    // The engine re-asserts Play() when Dart's playing intent contradicts a
-    // paused session (the swallowed-play self-heal). This storm pins that the
-    // heal is strictly one-directional: after a real pause the clock must
-    // stop, and after a real play it must run — through eight full
-    // pause/seek/play cycles on the real pipeline.
-    final p = RawPlayer('toggle-storm');
-    await p.init();
-    try {
-      await p.call('load', {
-        'audioSource': playlist('root', [leaf('a', _sixWav.uri)], [0]),
-        'initialIndex': 0,
-        'initialPosition': 0,
-      });
-      unawaited(p.call('play').then((_){}, onError: (_){}));
-      var s = await p.sample();
-      final warm = Stopwatch()..start();
-      while ((s['updatePosition'] as int? ?? 0) < 100000) {
-        require(warm.elapsed < const Duration(seconds: 5), 'never started: $s');
-        await Future<void>.delayed(const Duration(milliseconds: 120));
-        s = await p.sample();
-      }
-      for (var i = 0; i < 8; i++) {
-        // Pause, let the pipeline settle, then prove the clock is stopped:
-        // two samples 250ms apart must not advance meaningfully.
-        await p.call('pause');
+          '${player.events.map((e) => e['updatePosition']).toList()}',
+        );
+        // The position must survive the SeekCompleted handback: the truthful
+        // session position after the seek settles is still the seeked one, not
+        // the load's initial zero.
         await Future<void>.delayed(const Duration(milliseconds: 300));
-        final a = await p.sample();
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-        final b = await p.sample();
         require(
+          player.events.last['updatePosition'] == 1000000,
+          'position snapped back after the seek: ${player.events.last}',
+        );
+      } finally {
+        await p?.dispose();
+        await server.close(force: true);
+      }
+    },
+  );
+  await scenario(
+    'the requested initial position is reported while loading',
+    () async {
+      // The engine defers the initial position to the open, but the loading
+      // broadcasts must report the requested position rather than a transient
+      // 0 - otherwise a seek bar visibly jumps from 0 when the item opens.
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        final bytes = _longWav.readAsBytesSync();
+        request.response.headers.contentType = ContentType('audio', 'wav');
+        request.response.contentLength = bytes.length;
+        request.response.add(bytes);
+        await request.response.close();
+      });
+      final p = RawPlayer('initial-position-loading');
+      try {
+        await p.init();
+        final loading = p.call('load', {
+          'audioSource': leaf(
+            'a',
+            Uri.parse('http://127.0.0.1:${server.port}/audio.wav'),
+          ),
+          'initialIndex': 0,
+          'initialPosition': 1200000,
+        });
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        final duringLoad = p.events
+            .where((e) => e['processingState'] == 1)
+            .map((e) => e['updatePosition'])
+            .toList();
+        await loading.timeout(const Duration(seconds: 5));
+        require(duringLoad.isNotEmpty, 'no loading-state events observed');
+        require(
+          duringLoad.every((pos) => pos == 1200000),
+          'loading events reported $duringLoad, expected all 1200000',
+        );
+      } finally {
+        await p.dispose();
+        await server.close(force: true);
+      }
+    },
+  );
+  await scenario(
+    'rapid pause play seek toggling never fights the user intent',
+    () async {
+      // The engine re-asserts Play() when Dart's playing intent contradicts a
+      // paused session (the swallowed-play self-heal). This storm pins that the
+      // heal is strictly one-directional: after a real pause the clock must
+      // stop, and after a real play it must run — through eight full
+      // pause/seek/play cycles on the real pipeline.
+      final p = RawPlayer('toggle-storm');
+      await p.init();
+      try {
+        await p.call('load', {
+          'audioSource': playlist('root', [leaf('a', _sixWav.uri)], [0]),
+          'initialIndex': 0,
+          'initialPosition': 0,
+        });
+        unawaited(p.call('play').then((_) {}, onError: (_) {}));
+        var s = await p.sample();
+        final warm = Stopwatch()..start();
+        while ((s['updatePosition'] as int? ?? 0) < 100000) {
+          require(
+            warm.elapsed < const Duration(seconds: 5),
+            'never started: $s',
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          s = await p.sample();
+        }
+        for (var i = 0; i < 8; i++) {
+          // Pause, let the pipeline settle, then prove the clock is stopped:
+          // two samples 250ms apart must not advance meaningfully.
+          await p.call('pause');
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          final a = await p.sample();
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          final b = await p.sample();
+          require(
             (b['updatePosition'] as int) - (a['updatePosition'] as int) <
                 150000,
             'toggle $i: the clock kept advancing ~550ms after pause: '
-            '$a -> $b');
-        // Seek while paused, then play, and prove the clock runs again.
-        await p.call('seek', {'position': 500000 + i * 250000});
-        unawaited(p.call('play').then((_){}, onError: (_){}));
-        await Future<void>.delayed(const Duration(milliseconds: 350));
-        final c = await p.sample();
-        await Future<void>.delayed(const Duration(milliseconds: 250));
-        final d = await p.sample();
-        require((d['updatePosition'] as int) - (c['updatePosition'] as int) >
-            100000,
-            'toggle $i: playback did not resume after play: $c -> $d');
+            '$a -> $b',
+          );
+          // Seek while paused, then play, and prove the clock runs again.
+          await p.call('seek', {'position': 500000 + i * 250000});
+          unawaited(p.call('play').then((_) {}, onError: (_) {}));
+          await Future<void>.delayed(const Duration(milliseconds: 350));
+          final c = await p.sample();
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          final d = await p.sample();
+          require(
+            (d['updatePosition'] as int) - (c['updatePosition'] as int) >
+                100000,
+            'toggle $i: playback did not resume after play: $c -> $d',
+          );
+        }
+        await p.call('pause');
+      } finally {
+        await p.dispose();
       }
-      await p.call('pause');
-    } finally {
-      await p.dispose();
-    }
-  });
-  await scenario('rapid create load seek dispose with callbacks in flight',
-      () async {
-    for (var i = 0; i < 30; i++) {
-      final p = RawPlayer('stress-$i');
-      await p.init();
-      final pending = caught(p.call('load', {
-        'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1])
-      }));
-      await p.dispose();
-      final outcome = await pending.timeout(const Duration(seconds: 2));
-      require(outcome == null || outcome is PlatformException,
-          'invalid disposed load result $outcome');
-    }
+    },
+  );
+  await scenario(
+    'rapid create load seek dispose with callbacks in flight',
+    () async {
+      for (var i = 0; i < 30; i++) {
+        final p = RawPlayer('stress-$i');
+        await p.init();
+        final pending = caught(
+          p.call('load', {
+            'audioSource': playlist('root', [leaf('a'), leaf('b')], [0, 1]),
+          }),
+        );
+        await p.dispose();
+        final outcome = await pending.timeout(const Duration(seconds: 2));
+        require(
+          outcome == null || outcome is PlatformException,
+          'invalid disposed load result $outcome',
+        );
+      }
+      final p = await newPlayer();
+      await p.setFilePath(_shortWav.path);
+      await p.play().timeout(const Duration(seconds: 5));
+      require(
+        p.processingState == ProcessingState.completed,
+        'engine unusable after disposal stress',
+      );
+    },
+  );
+  await scenario(
+    'just_audio proxy delivers custom headers and userAgent on Windows',
+    () async {
+      String? seenAuth;
+      String? seenCustom;
+      String? seenAgent;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        seenAuth = request.headers.value('authorization');
+        seenCustom = request.headers.value('x-custom-test');
+        seenAgent = request.headers.value(HttpHeaders.userAgentHeader);
+        final bytes = _longWav.readAsBytesSync();
+        request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+        request.response.headers.contentType = ContentType('audio', 'wav');
+        final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
+        final match = rangeHeader == null
+            ? null
+            : RegExp(r'^bytes=(\d+)-(\d*)$').firstMatch(rangeHeader);
+        if (match != null) {
+          final start = int.parse(match.group(1)!);
+          final endRaw = match.group(2);
+          final end = (endRaw == null || endRaw.isEmpty)
+              ? bytes.length - 1
+              : int.parse(endRaw).clamp(start, bytes.length - 1);
+          final slice = bytes.sublist(start, end + 1);
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes $start-$end/${bytes.length}',
+          );
+          request.response.contentLength = slice.length;
+          request.response.add(slice);
+        } else {
+          request.response.contentLength = bytes.length;
+          request.response.add(bytes);
+        }
+        await request.response.close();
+      });
+      final p = AudioPlayer(userAgent: 'JAWTestAgent/1.0');
+      _players.add(p);
+      await p.setVolume(0);
+      try {
+        final loadedDuration = await p.setAudioSource(
+          AudioSource.uri(
+            Uri.parse('http://127.0.0.1:${server.port}/protected.wav'),
+            headers: <String, String>{
+              'Authorization': 'Bearer demo-secret',
+              'X-Custom-Test': 'ok',
+            },
+          ),
+        );
+        require(
+          loadedDuration == const Duration(seconds: 3),
+          'Expected 3s duration via proxy, got $loadedDuration',
+        );
+        unawaited(p.play());
+        await eventually(
+          () => p.position > const Duration(milliseconds: 50),
+          'proxied playback did not advance',
+        );
+        require(
+          seenAuth == 'Bearer demo-secret',
+          'Missing Authorization header at origin: $seenAuth',
+        );
+        require(
+          seenCustom == 'ok',
+          'Missing custom header at origin: $seenCustom',
+        );
+        require(
+          seenAgent == 'JAWTestAgent/1.0',
+          'Missing User-Agent header at origin: $seenAgent',
+        );
+      } finally {
+        await server.close(force: true);
+      }
+    },
+  );
+  await scenario(
+    'non-ASCII local file paths and reserved filename characters play cleanly',
+    () async {
+      final wavBytes = _shortWav.readAsBytesSync();
+      final samples = <File>[
+        File('${_artifacts.path}/Đọc diễn cảm/track #1 [100%].wav'),
+        File('${_artifacts.path}/تلاوات قرآنية/مقطع صوتي #2 %.wav'),
+        File('${_artifacts.path}/Đọc diễn cảm/{clip}^`1 [100%] #3 %.wav'),
+      ];
+      for (final file in samples) {
+        file.parent.createSync(recursive: true);
+        file.writeAsBytesSync(wavBytes);
+        final p = await newPlayer();
+        final duration = await p.setFilePath(file.path);
+        require(
+          duration == const Duration(milliseconds: 400),
+          'Wrong duration for ${file.path}: $duration',
+        );
+        await p.play().timeout(const Duration(seconds: 5));
+        require(
+          p.processingState == ProcessingState.completed,
+          'Playback did not finish for ${file.path}',
+        );
+      }
+    },
+  );
+  await scenario(
+    'multiple ClippingAudioSource items on one file and open-ended clip',
+    () async {
+      final p = await newPlayer();
+      await p.setAudioSources(<AudioSource>[
+        ClippingAudioSource(
+          child: AudioSource.file(_sixWav.path),
+          start: Duration.zero,
+          end: const Duration(seconds: 1),
+        ),
+        ClippingAudioSource(
+          child: AudioSource.file(_sixWav.path),
+          start: const Duration(seconds: 2),
+          end: const Duration(seconds: 3),
+        ),
+      ]);
+      require(
+        p.duration == const Duration(seconds: 1),
+        'Expected 1s first clip duration, got ${p.duration}',
+      );
+      await p.play().timeout(const Duration(seconds: 8));
+      require(
+        p.processingState == ProcessingState.completed,
+        'multi-clip playlist did not finish',
+      );
+      require(
+        p.currentIndex == 1,
+        'multi-clip playlist stopped on index ${p.currentIndex}',
+      );
+
+      final openEnded = await newPlayer();
+      final tailDuration = await openEnded.setAudioSource(
+        ClippingAudioSource(
+          child: AudioSource.file(_sixWav.path),
+          start: const Duration(seconds: 4),
+        ),
+      );
+      require(
+        tailDuration == const Duration(seconds: 2),
+        'Expected 2s open-ended clip duration, got $tailDuration',
+      );
+      await openEnded.play().timeout(const Duration(seconds: 6));
+      require(
+        openEnded.processingState == ProcessingState.completed,
+        'open-ended clip did not complete',
+      );
+    },
+  );
+  await scenario(
+    'playback speed 0.25x and 3.0x persist across track switches',
+    () async {
+      final p = await newPlayer();
+      await p.setAudioSources(<AudioSource>[
+        AudioSource.file(_shortWav.path),
+        AudioSource.file(_longWav.path),
+      ]);
+      await p.setSpeed(0.25);
+      require(p.speed == 0.25, '0.25x speed failed: ${p.speed}');
+      await p.setSpeed(3.0);
+      require(p.speed == 3.0, '3.0x speed failed: ${p.speed}');
+      unawaited(p.play());
+      await eventually(
+        () => p.currentIndex == 1,
+        '3.0x playlist did not advance to second track',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      require(
+        p.speed == 3.0,
+        'Speed reverted after track switch: expected 3.0, got ${p.speed}',
+      );
+      await p.pause();
+    },
+  );
+  await scenario('clearAudioSources during playback stops audio cleanly', () async {
     final p = await newPlayer();
+    await p.setFilePath(_longWav.path);
+    unawaited(p.play());
+    await eventually(
+      () => p.position > const Duration(milliseconds: 80),
+      'playback did not start before clearAudioSources',
+    );
+    await p.clearAudioSources();
+    require(
+      p.sequence.isEmpty,
+      'sequence not empty after clearAudioSources: ${p.sequence.length}',
+    );
+    require(
+      p.processingState == ProcessingState.completed,
+      'expected completed after clearAudioSources, got ${p.processingState}',
+    );
+    final stoppedPos = p.position;
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    require(
+      p.position == stoppedPos,
+      'position kept moving after clearAudioSources: $stoppedPos -> ${p.position}',
+    );
     await p.setFilePath(_shortWav.path);
-    await p.play().timeout(const Duration(seconds: 5));
-    require(p.processingState == ProcessingState.completed,
-        'engine unusable after disposal stress');
+    await eventually(
+      () => p.processingState == ProcessingState.completed,
+      'player could not reload and play to completion after clearAudioSources',
+    );
+    await p.pause();
   });
-  await scenario('just_audio proxy delivers custom headers and userAgent on Windows',
-      () async {
+  await scenario(
+    'setAllowsExternalPlayback succeeds without MissingPluginException',
+    () async {
+      final p = await newPlayer();
+      await p.setAllowsExternalPlayback(true);
+      await p.setAllowsExternalPlayback(false);
+    },
+  );
+  await scenario(
+    'unsupported native format reports structured diagnostic message',
+    () async {
+      final badMp3 = File('${_artifacts.path}/corrupt.mp3')
+        ..writeAsBytesSync(
+          Uint8List.fromList(List<int>.generate(512, (i) => (i * 73) & 0xff)),
+        );
+      final p = await newPlayer();
+      Object? failure;
+      try {
+        await p.setFilePath(badMp3.path).timeout(const Duration(seconds: 5));
+      } catch (error) {
+        failure = error;
+      }
+      require(
+        failure is PlayerException,
+        'Expected PlayerException, got $failure',
+      );
+      final ex = failure as PlayerException;
+      require(ex.code == 1, 'Expected code 1, got ${ex.code}');
+      final msg = ex.message ?? '';
+      require(
+        msg.contains('0x'),
+        'Expected hex HRESULT in diagnostic message, got: $msg',
+      );
+    },
+  );
+  await scenario(
+    'clearAudioSources then addAudioSource re-attaches and plays cleanly',
+    () async {
+      final p = await newPlayer();
+      await p.setFilePath(_longWav.path);
+      unawaited(p.play());
+      await eventually(
+        () => p.position > const Duration(milliseconds: 80),
+        'playback did not start before clearAudioSources',
+      );
+      await p.clearAudioSources();
+      require(
+        p.sequence.isEmpty,
+        'sequence not empty after clearAudioSources: ${p.sequence.length}',
+      );
+      require(
+        p.processingState == ProcessingState.completed,
+        'expected completed after clearAudioSources, got ${p.processingState}',
+      );
+      await p.addAudioSource(AudioSource.file(_shortWav.path));
+      await eventually(
+        () => p.processingState == ProcessingState.completed,
+        'inserted item after clearAudioSources never completed',
+      );
+      await p.pause();
+    },
+  );
+  await scenario(
+    'completed playlist stays completed and does not extrapolate position',
+    () async {
+      final p = await newPlayer();
+      await p.setLoopMode(LoopMode.off);
+      await p.setAudioSources(<AudioSource>[
+        AudioSource.file(_shortWav.path),
+        AudioSource.file(_shortWav.path),
+      ]);
+      await p.play().timeout(const Duration(seconds: 6));
+      require(
+        p.processingState == ProcessingState.completed,
+        'expected completed state after playlist EOF, got ${p.processingState}',
+      );
+      final endPos = p.position;
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      require(
+        p.processingState == ProcessingState.completed,
+        'completed state reverted to ${p.processingState}',
+      );
+      require(
+        p.position == endPos,
+        'position extrapolated after playlist EOF: $endPos -> ${p.position}',
+      );
+    },
+  );
+  await scenario(
+    'rapid cross-item scrub back to index 0 lands on index 0',
+    () async {
+      final p = await newPlayer();
+      await p.setAudioSources(<AudioSource>[
+        AudioSource.file(_sixWav.path),
+        AudioSource.file(_sixWav.path),
+        AudioSource.file(_sixWav.path),
+      ]);
+      unawaited(p.play());
+      await eventually(
+        () => p.position > const Duration(milliseconds: 50),
+        'playback did not start before rapid scrub',
+      );
+      unawaited(p.seek(const Duration(milliseconds: 500), index: 1));
+      await p.seek(const Duration(milliseconds: 1500), index: 0);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      require(
+        p.currentIndex == 0,
+        'expected index 0 after rapid cross-item scrub, got ${p.currentIndex}',
+      );
+      require(
+        p.position >= const Duration(milliseconds: 1400),
+        'expected position >= 1400ms on index 0, got ${p.position}',
+      );
+      await p.pause();
+    },
+  );
+  await scenario(
+    'real MP3 and M4A (AAC) files load, seek, and play to completion',
+    () async {
+      final mp3File = makeMp3('encoded.mp3', 40);
+      final m4aFile = makeM4a('encoded.m4a');
+      for (final file in [mp3File, m4aFile]) {
+        final p = await newPlayer();
+        final d = await p.setFilePath(file.path);
+        require(
+          d != null &&
+              d >= const Duration(milliseconds: 800) &&
+              d <= const Duration(milliseconds: 1300),
+          'Unexpected decoded duration for ${file.path}: $d',
+        );
+        await p.seek(const Duration(milliseconds: 400));
+        await p.play().timeout(const Duration(seconds: 6));
+        require(
+          p.processingState == ProcessingState.completed,
+          '${file.path} did not complete: ${p.processingState}',
+        );
+      }
+      final clipPlayer = await newPlayer();
+      final clipDuration = await clipPlayer.setAudioSource(
+        ClippingAudioSource(
+          child: AudioSource.file(m4aFile.path),
+          start: const Duration(milliseconds: 200),
+          end: const Duration(milliseconds: 700),
+        ),
+      );
+      require(
+        clipDuration != null &&
+            clipDuration >= const Duration(milliseconds: 400) &&
+            clipDuration <= const Duration(milliseconds: 600),
+        'Unexpected clipped M4A duration: $clipDuration',
+      );
+      await clipPlayer.play().timeout(const Duration(seconds: 6));
+      require(
+        clipPlayer.processingState == ProcessingState.completed,
+        'Clipped M4A did not complete: ${clipPlayer.processingState}',
+      );
+    },
+  );
+  await scenario(
+    'StreamAudioSource serves in-memory bytes via proxy with range seek',
+    () async {
+      final source = _MemoryStreamAudioSource(_longWav.readAsBytesSync());
+      final p = await newPlayer();
+      final duration = await p.setAudioSource(source);
+      require(
+        duration == const Duration(seconds: 3),
+        'Expected 3s duration from StreamAudioSource, got $duration',
+      );
+      await p.seek(const Duration(milliseconds: 2400));
+      await p.play().timeout(const Duration(seconds: 6));
+      require(
+        p.processingState == ProcessingState.completed,
+        'StreamAudioSource did not complete: ${p.processingState}',
+      );
+      require(
+        source.requestCount >= 1,
+        'StreamAudioSource received no byte requests: ${source.requestCount}',
+      );
+    },
+  );
+  await scenario('LockCachingAudioSource downloads, caches with headers, and resolves to offline file', () async {
     String? seenAuth;
-    String? seenCustom;
-    String? seenAgent;
+    final wavBytes = _shortWav.readAsBytesSync();
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var serverClosed = false;
     server.listen((request) async {
       seenAuth = request.headers.value('authorization');
-      seenCustom = request.headers.value('x-custom-test');
-      seenAgent = request.headers.value(HttpHeaders.userAgentHeader);
-      final bytes = _longWav.readAsBytesSync();
       request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
       request.response.headers.contentType = ContentType('audio', 'wav');
       final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
@@ -1322,228 +2075,362 @@ Future<void> main() async {
         final start = int.parse(match.group(1)!);
         final endRaw = match.group(2);
         final end = (endRaw == null || endRaw.isEmpty)
-            ? bytes.length - 1
-            : int.parse(endRaw).clamp(start, bytes.length - 1);
-        final slice = bytes.sublist(start, end + 1);
+            ? wavBytes.length - 1
+            : int.parse(endRaw).clamp(start, wavBytes.length - 1);
+        final slice = wavBytes.sublist(start, end + 1);
         request.response.statusCode = HttpStatus.partialContent;
         request.response.headers.set(
-            HttpHeaders.contentRangeHeader, 'bytes $start-$end/${bytes.length}');
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/${wavBytes.length}',
+        );
         request.response.contentLength = slice.length;
         request.response.add(slice);
       } else {
-        request.response.contentLength = bytes.length;
-        request.response.add(bytes);
+        request.response.contentLength = wavBytes.length;
+        request.response.add(wavBytes);
       }
       await request.response.close();
     });
-    final p = AudioPlayer(userAgent: 'JAWTestAgent/1.0');
-    _players.add(p);
-    await p.setVolume(0);
+    final port = server.port;
+    final cacheFile = File('${_artifacts.path}/lock_cache_test.wav');
+    final partFile = File('${cacheFile.path}.part');
+    final mimeFile = File('${cacheFile.path}.mime');
+    for (final f in [cacheFile, partFile, mimeFile]) {
+      if (f.existsSync()) f.deleteSync();
+    }
     try {
-      final loadedDuration = await p.setAudioSource(
-        AudioSource.uri(
-          Uri.parse('http://127.0.0.1:${server.port}/protected.wav'),
-          headers: <String, String>{
-            'Authorization': 'Bearer demo-secret',
-            'X-Custom-Test': 'ok',
-          },
+      Object? upstreamRenameError;
+      final zoneDone = Completer<void>();
+      runZonedGuarded(
+        () {
+          () async {
+            try {
+              // ignore: experimental_member_use
+              final source = LockCachingAudioSource(
+                Uri.parse('http://127.0.0.1:$port/cached.wav'),
+                headers: const {'Authorization': 'Bearer cache-secret'},
+                cacheFile: cacheFile,
+              );
+              final p = await newPlayer();
+              await p.setAudioSource(source);
+              await p.play().timeout(const Duration(seconds: 6));
+              require(
+                p.processingState == ProcessingState.completed,
+                'LockCachingAudioSource playback did not complete: ${p.processingState}',
+              );
+              require(
+                seenAuth == 'Bearer cache-secret',
+                'Missing Authorization header during cache download: $seenAuth',
+              );
+              await eventually(
+                () =>
+                    mimeFile.existsSync() &&
+                    ((cacheFile.existsSync() &&
+                            cacheFile.lengthSync() == wavBytes.length) ||
+                        (partFile.existsSync() &&
+                            partFile.lengthSync() == wavBytes.length)),
+                'LockCachingAudioSource wrote neither finalized nor .part cache file',
+                timeout: const Duration(seconds: 3),
+              );
+              await Future<void>.delayed(const Duration(milliseconds: 50));
+              if (!zoneDone.isCompleted) zoneDone.complete();
+            } catch (e, st) {
+              if (!zoneDone.isCompleted) zoneDone.completeError(e, st);
+            }
+          }();
+        },
+        (error, stack) {
+          // Upstream just_audio 0.10.6 opens an IOSink on .part without closing
+          // it before renameSync(), hitting Windows ERROR_SHARING_VIOLATION (32).
+          if (error is PathAccessException && upstreamRenameError == null) {
+            upstreamRenameError = error;
+            return;
+          }
+          if (!zoneDone.isCompleted) {
+            zoneDone.completeError(error, stack);
+          }
+        },
+      );
+      await zoneDone.future;
+      if (upstreamRenameError != null) {
+        require(
+          upstreamRenameError is PathAccessException,
+          'Unexpected async zone error: $upstreamRenameError',
+        );
+      }
+      serverClosed = true;
+      await server.close(force: true);
+      final offlineCache = File('${_artifacts.path}/lock_cache_offline.wav')
+        ..writeAsBytesSync(wavBytes);
+      // ignore: experimental_member_use
+      final offlineSource = LockCachingAudioSource(
+        Uri.parse('http://127.0.0.1:$port/offline.wav'),
+        cacheFile: offlineCache,
+      );
+      final resolved = await offlineSource.resolve();
+      require(
+        resolved is UriAudioSource && resolved.uri.scheme == 'file',
+        'Expected offline file UriAudioSource, got $resolved',
+      );
+      final p2 = await newPlayer();
+      await p2.setAudioSource(resolved);
+      await p2.play().timeout(const Duration(seconds: 5));
+      require(
+        p2.processingState == ProcessingState.completed,
+        'Offline cached file playback did not complete: ${p2.processingState}',
+      );
+    } finally {
+      if (!serverClosed) {
+        await server.close(force: true);
+      }
+    }
+  });
+  await scenario('local HLS (.m3u8) plays directly and with proxy Authorization headers', () async {
+    final tsBytes = base64Decode(_hlsTsOneSecondBase64);
+    const manifest =
+        '#EXTM3U\n'
+        '#EXT-X-VERSION:3\n'
+        '#EXT-X-TARGETDURATION:2\n'
+        '#EXT-X-MEDIA-SEQUENCE:0\n'
+        '#EXTINF:1.000,\n'
+        'seg0.ts\n'
+        '#EXT-X-ENDLIST\n';
+    final manifestBytes = utf8.encode(manifest);
+    final requestLog = <String>[];
+    String? manifestAuth;
+    String? segmentAuth;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      final auth = request.headers.value('authorization');
+      requestLog.add('${request.method} ${request.uri.path} auth=$auth');
+      if (request.uri.path == '/hls/stream.m3u8') {
+        manifestAuth = auth;
+        request.response.headers.set(
+          HttpHeaders.contentTypeHeader,
+          'application/vnd.apple.mpegurl',
+        );
+        request.response.contentLength = manifestBytes.length;
+        if (request.method != 'HEAD') {
+          request.response.add(manifestBytes);
+        }
+      } else if (request.uri.path == '/hls/seg0.ts') {
+        segmentAuth = auth;
+        request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
+        request.response.headers.set(
+          HttpHeaders.contentTypeHeader,
+          'video/mp2t',
+        );
+        final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
+        final match = rangeHeader == null
+            ? null
+            : RegExp(r'^bytes=(\d+)-(\d*)$').firstMatch(rangeHeader);
+        if (match != null) {
+          final start = int.parse(match.group(1)!);
+          final endRaw = match.group(2);
+          final end = (endRaw == null || endRaw.isEmpty)
+              ? tsBytes.length - 1
+              : int.parse(endRaw).clamp(start, tsBytes.length - 1);
+          final slice = tsBytes.sublist(start, end + 1);
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes $start-$end/${tsBytes.length}',
+          );
+          request.response.contentLength = slice.length;
+          if (request.method != 'HEAD') {
+            request.response.add(slice);
+          }
+        } else {
+          request.response.contentLength = tsBytes.length;
+          if (request.method != 'HEAD') {
+            request.response.add(tsBytes);
+          }
+        }
+      } else {
+        request.response.statusCode = HttpStatus.notFound;
+      }
+      await request.response.close();
+    });
+    try {
+      // Sub-test A: direct HLS without headers
+      final p1 = await newPlayer();
+      await p1.setAudioSource(
+        HlsAudioSource(
+          Uri.parse('http://127.0.0.1:${server.port}/hls/stream.m3u8'),
         ),
       );
-      require(loadedDuration == const Duration(seconds: 3),
-          'Expected 3s duration via proxy, got $loadedDuration');
-      unawaited(p.play());
-      await eventually(() => p.position > const Duration(milliseconds: 50),
-          'proxied playback did not advance');
-      require(seenAuth == 'Bearer demo-secret',
-          'Missing Authorization header at origin: $seenAuth');
+      await p1.play().timeout(const Duration(seconds: 8));
       require(
-          seenCustom == 'ok', 'Missing custom header at origin: $seenCustom');
-      require(seenAgent == 'JAWTestAgent/1.0',
-          'Missing User-Agent header at origin: $seenAgent');
+        p1.processingState == ProcessingState.completed,
+        'Direct HLS did not complete: ${p1.processingState} log=$requestLog',
+      );
+
+      // Sub-test B: HLS with Authorization headers via just_audio proxy
+      manifestAuth = null;
+      segmentAuth = null;
+      final p2 = await newPlayer();
+      await p2.setAudioSource(
+        HlsAudioSource(
+          Uri.parse('http://127.0.0.1:${server.port}/hls/stream.m3u8'),
+          headers: const {'Authorization': 'Bearer hls-secret'},
+        ),
+      );
+      await p2.play().timeout(const Duration(seconds: 8));
+      require(
+        p2.processingState == ProcessingState.completed,
+        'Proxied HLS did not complete: ${p2.processingState} log=$requestLog',
+      );
+      require(
+        manifestAuth == 'Bearer hls-secret',
+        'Missing Authorization header on HLS manifest: $manifestAuth log=$requestLog',
+      );
+      require(
+        segmentAuth == 'Bearer hls-secret',
+        'Missing Authorization header on HLS segment: $segmentAuth log=$requestLog',
+      );
     } finally {
       await server.close(force: true);
     }
   });
-  await scenario(
-      'non-ASCII local file paths and reserved filename characters play cleanly',
-      () async {
-    final wavBytes = _shortWav.readAsBytesSync();
-    final samples = <File>[
-      File('${_artifacts.path}/Đọc diễn cảm/track #1 [100%].wav'),
-      File('${_artifacts.path}/تلاوات قرآنية/مقطع صوتي #2 %.wav'),
-      File('${_artifacts.path}/Đọc diễn cảm/{clip}^`1 [100%] #3 %.wav'),
-    ];
-    for (final file in samples) {
-      file.parent.createSync(recursive: true);
-      file.writeAsBytesSync(wavBytes);
+  await scenario('live unseekable chunked HTTP MP3 stream opens with zero initialPosition and advances', () async {
+    var closing = false;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) {
+      if (request.uri.path != '/live.mp3') {
+        request.response.statusCode = HttpStatus.notFound;
+        unawaited(request.response.close());
+        return;
+      }
+      unawaited(() async {
+        try {
+          request.response.headers.contentType = ContentType('audio', 'mpeg');
+          request.response.bufferOutput = false;
+          request.response.add(makeMp3Bytes(16));
+          await request.response.flush();
+          final chunk = makeMp3Bytes(4);
+          for (var i = 0; i < 120 && !closing; i++) {
+            request.response.add(chunk);
+            await request.response.flush();
+            await Future<void>.delayed(const Duration(milliseconds: 50));
+          }
+        } on SocketException {
+          // Expected when the player closes the live stream socket.
+        } on HttpException {
+          // Expected when the HTTP connection aborts during shutdown.
+        } finally {
+          try {
+            await request.response.close();
+          } catch (_) {
+            // Response already closed.
+          }
+        }
+      }());
+    });
+    try {
       final p = await newPlayer();
-      final duration = await p.setFilePath(file.path);
-      require(duration == const Duration(milliseconds: 400),
-          'Wrong duration for ${file.path}: $duration');
-      await p.play().timeout(const Duration(seconds: 5));
-      require(p.processingState == ProcessingState.completed,
-          'Playback did not finish for ${file.path}');
+      await p
+          .setUrl(
+            'http://127.0.0.1:${server.port}/live.mp3',
+            initialPosition: Duration.zero,
+          )
+          .timeout(const Duration(seconds: 8));
+      unawaited(p.play());
+      await eventually(
+        () => p.position > const Duration(milliseconds: 100),
+        'live chunked stream did not advance',
+      );
+      require(
+        p.bufferedPosition >= Duration.zero,
+        'negative bufferedPosition: ${p.bufferedPosition}',
+      );
+      final dur = p.duration;
+      if (dur != null) {
+        require(
+          p.bufferedPosition <= dur,
+          'bufferedPosition ${p.bufferedPosition} exceeds duration $dur',
+        );
+      }
+      await p.pause();
+    } finally {
+      closing = true;
+      await server.close(force: true);
     }
   });
-  await scenario(
-      'multiple ClippingAudioSource items on one file and open-ended clip',
-      () async {
+  await scenario('stop() tears down native player and subsequent load/play reactivates cleanly', () async {
     final p = await newPlayer();
-    await p.setAudioSources(<AudioSource>[
-      ClippingAudioSource(
-        child: AudioSource.file(_sixWav.path),
-        start: Duration.zero,
-        end: const Duration(seconds: 1),
-      ),
-      ClippingAudioSource(
-        child: AudioSource.file(_sixWav.path),
-        start: const Duration(seconds: 2),
-        end: const Duration(seconds: 3),
-      ),
-    ]);
-    require(p.duration == const Duration(seconds: 1),
-        'Expected 1s first clip duration, got ${p.duration}');
-    await p.play().timeout(const Duration(seconds: 8));
-    require(p.processingState == ProcessingState.completed,
-        'multi-clip playlist did not finish');
-    require(p.currentIndex == 1,
-        'multi-clip playlist stopped on index ${p.currentIndex}');
-
-    final openEnded = await newPlayer();
-    final tailDuration = await openEnded.setAudioSource(
-      ClippingAudioSource(
-        child: AudioSource.file(_sixWav.path),
-        start: const Duration(seconds: 4),
-      ),
+    await p.setFilePath(_longWav.path);
+    unawaited(p.play());
+    await eventually(
+      () => p.position > const Duration(milliseconds: 100),
+      'playback did not start before stop()',
     );
-    require(tailDuration == const Duration(seconds: 2),
-        'Expected 2s open-ended clip duration, got $tailDuration');
-    await openEnded.play().timeout(const Duration(seconds: 6));
-    require(openEnded.processingState == ProcessingState.completed,
-        'open-ended clip did not complete');
+    await p.stop();
+    require(
+      p.processingState == ProcessingState.idle,
+      'expected idle after stop(), got ${p.processingState}',
+    );
+    require(!p.playing, 'expected playing == false after stop()');
+    await p.setFilePath(_shortWav.path);
+    await p.play().timeout(const Duration(seconds: 5));
+    require(
+      p.processingState == ProcessingState.completed,
+      'reactivated player after stop() did not complete',
+    );
   });
-  await scenario('playback speed 0.25x and 3.0x persist across track switches',
-      () async {
+  await scenario('seekToNext, seekToPrevious, and dynamic setClip work end-to-end', () async {
     final p = await newPlayer();
-    await p.setAudioSources(<AudioSource>[
+    await p.setAudioSources([
+      AudioSource.file(_longWav.path),
       AudioSource.file(_shortWav.path),
       AudioSource.file(_longWav.path),
     ]);
-    await p.setSpeed(0.25);
-    require(p.speed == 0.25, '0.25x speed failed: ${p.speed}');
-    await p.setSpeed(3.0);
-    require(p.speed == 3.0, '3.0x speed failed: ${p.speed}');
-    unawaited(p.play());
-    await eventually(() => p.currentIndex == 1,
-        '3.0x playlist did not advance to second track');
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    require(p.speed == 3.0,
-        'Speed reverted after track switch: expected 3.0, got ${p.speed}');
-    await p.pause();
-  });
-  await scenario('clearAudioSources during playback stops audio cleanly',
-      () async {
-    final p = await newPlayer();
-    await p.setFilePath(_longWav.path);
-    unawaited(p.play());
-    await eventually(() => p.position > const Duration(milliseconds: 80),
-        'playback did not start before clearAudioSources');
-    await p.clearAudioSources();
-    require(p.sequence.isEmpty,
-        'sequence not empty after clearAudioSources: ${p.sequence.length}');
-    require(p.processingState == ProcessingState.completed,
-        'expected completed after clearAudioSources, got ${p.processingState}');
-    final stoppedPos = p.position;
-    await Future<void>.delayed(const Duration(milliseconds: 250));
-    require(p.position == stoppedPos,
-        'position kept moving after clearAudioSources: $stoppedPos -> ${p.position}');
-    await p.setFilePath(_shortWav.path);
-    await eventually(() => p.processingState == ProcessingState.completed,
-        'player could not reload and play to completion after clearAudioSources');
-    await p.pause();
-  });
-  await scenario('setAllowsExternalPlayback succeeds without MissingPluginException',
-      () async {
-    final p = await newPlayer();
-    await p.setAllowsExternalPlayback(true);
-    await p.setAllowsExternalPlayback(false);
-  });
-  await scenario('unsupported native format reports structured diagnostic message',
-      () async {
-    final badMp3 = File('${_artifacts.path}/corrupt.mp3')
-      ..writeAsBytesSync(
-          Uint8List.fromList(List<int>.generate(512, (i) => (i * 73) & 0xff)));
-    final p = await newPlayer();
-    Object? failure;
-    try {
-      await p.setFilePath(badMp3.path).timeout(const Duration(seconds: 5));
-    } catch (error) {
-      failure = error;
-    }
-    require(failure is PlayerException, 'Expected PlayerException, got $failure');
-    final ex = failure as PlayerException;
-    require(ex.code == 1, 'Expected code 1, got ${ex.code}');
-    final msg = ex.message ?? '';
-    require(msg.contains('0x'),
-        'Expected hex HRESULT in diagnostic message, got: $msg');
-  });
-  await scenario(
-      'clearAudioSources then addAudioSource re-attaches and plays cleanly',
-      () async {
-    final p = await newPlayer();
-    await p.setFilePath(_longWav.path);
-    unawaited(p.play());
-    await eventually(() => p.position > const Duration(milliseconds: 80),
-        'playback did not start before clearAudioSources');
-    await p.clearAudioSources();
-    require(p.sequence.isEmpty,
-        'sequence not empty after clearAudioSources: ${p.sequence.length}');
-    require(p.processingState == ProcessingState.completed,
-        'expected completed after clearAudioSources, got ${p.processingState}');
-    await p.addAudioSource(AudioSource.file(_shortWav.path));
-    await eventually(() => p.processingState == ProcessingState.completed,
-        'inserted item after clearAudioSources never completed');
-    await p.pause();
-  });
-  await scenario(
-      'completed playlist stays completed and does not extrapolate position',
-      () async {
-    final p = await newPlayer();
-    await p.setLoopMode(LoopMode.off);
-    await p.setAudioSources(<AudioSource>[
-      AudioSource.file(_shortWav.path),
-      AudioSource.file(_shortWav.path),
-    ]);
-    await p.play().timeout(const Duration(seconds: 6));
-    require(p.processingState == ProcessingState.completed,
-        'expected completed state after playlist EOF, got ${p.processingState}');
-    final endPos = p.position;
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    require(p.processingState == ProcessingState.completed,
-        'completed state reverted to ${p.processingState}');
-    require(p.position == endPos,
-        'position extrapolated after playlist EOF: $endPos -> ${p.position}');
-  });
-  await scenario(
-      'rapid cross-item scrub back to index 0 lands on index 0',
-      () async {
-    final p = await newPlayer();
-    await p.setAudioSources(<AudioSource>[
-      AudioSource.file(_sixWav.path),
-      AudioSource.file(_sixWav.path),
-      AudioSource.file(_sixWav.path),
-    ]);
-    unawaited(p.play());
-    await eventually(() => p.position > const Duration(milliseconds: 50),
-        'playback did not start before rapid scrub');
-    unawaited(p.seek(const Duration(milliseconds: 500), index: 1));
-    await p.seek(const Duration(milliseconds: 1500), index: 0);
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    require(p.currentIndex == 0,
-        'expected index 0 after rapid cross-item scrub, got ${p.currentIndex}');
-    require(p.position >= const Duration(milliseconds: 1400),
-        'expected position >= 1400ms on index 0, got ${p.position}');
-    await p.pause();
+    require(
+      p.currentIndex == 0 && p.hasNext && !p.hasPrevious,
+      'unexpected initial playlist state: idx=${p.currentIndex} hasNext=${p.hasNext} hasPrevious=${p.hasPrevious}',
+    );
+    await p.seekToNext();
+    await eventually(
+      () =>
+          p.currentIndex == 1 &&
+          p.duration == const Duration(milliseconds: 400),
+      'seekToNext to index 1 failed: idx=${p.currentIndex} dur=${p.duration}',
+    );
+    await p.seekToNext();
+    await eventually(
+      () => p.currentIndex == 2 && p.duration == const Duration(seconds: 3),
+      'second seekToNext to index 2 failed: idx=${p.currentIndex} dur=${p.duration}',
+    );
+    await p.seekToPrevious();
+    await eventually(
+      () => p.currentIndex == 1,
+      'seekToPrevious to index 1 failed: idx=${p.currentIndex}',
+    );
+
+    final c = await newPlayer();
+    await c.setFilePath(_sixWav.path);
+    require(
+      c.duration == const Duration(seconds: 6),
+      'expected 6s base duration before setClip, got ${c.duration}',
+    );
+    final d1 = await c.setClip(
+      start: const Duration(seconds: 1),
+      end: const Duration(seconds: 2),
+    );
+    require(
+      d1 == const Duration(seconds: 1),
+      'expected 1s clipped duration from setClip, got $d1',
+    );
+    await c.play().timeout(const Duration(seconds: 5));
+    require(
+      c.processingState == ProcessingState.completed,
+      'dynamic setClip playback did not complete: ${c.processingState}',
+    );
+    await c.pause();
+    final d2 = await c.setClip();
+    require(
+      d2 == const Duration(seconds: 6),
+      'expected 6s duration after clearing setClip, got $d2',
+    );
   });
   watchdog.cancel();
   _save();

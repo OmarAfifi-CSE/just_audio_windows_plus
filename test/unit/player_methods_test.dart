@@ -25,8 +25,8 @@ void main() {
 
   tearDown(MockAudioEngine.uninstall);
 
-  final Matcher argumentError = throwsA(isA<PlatformException>()
-      .having((e) => e.code, 'code', 'argument_error'));
+  final Matcher argumentError = throwsA(
+      isA<PlatformException>().having((e) => e.code, 'code', 'argument_error'));
 
   group('load', () {
     test('resolves the leaf duration for a progressive source', () async {
@@ -47,7 +47,8 @@ void main() {
       expect(res, isNotNull);
     });
 
-    test('reports a clipping duration from the bounds, not the child', () async {
+    test('reports a clipping duration from the bounds, not the child',
+        () async {
       final res = await channel.invokeMapMethod<String, dynamic>('load', {
         'audioSource': clippingSource(
           'clip',
@@ -185,7 +186,8 @@ void main() {
       );
     });
 
-    test('rejects direct request headers on external URIs and points at the proxy',
+    test(
+        'rejects direct request headers on external URIs and points at the proxy',
         () async {
       for (final badUri in <String>[
         'https://host/a.mp3',
@@ -231,7 +233,8 @@ void main() {
       }
     });
 
-    test('rejects a concatenating source whose shuffleOrder is not a permutation',
+    test(
+        'rejects a concatenating source whose shuffleOrder is not a permutation',
         () async {
       await expectLater(
         channel.invokeMethod<void>('load', {
@@ -248,7 +251,8 @@ void main() {
       );
     });
 
-    test('rejects a concatenating source with a missing shuffleOrder', () async {
+    test('rejects a concatenating source with a missing shuffleOrder',
+        () async {
       await expectLater(
         channel.invokeMethod<void>('load', {
           'audioSource': <String, dynamic>{
@@ -266,7 +270,8 @@ void main() {
     test('resolves a null duration for an empty playlist and completes play',
         () async {
       final res = await channel.invokeMapMethod<String, dynamic>('load', {
-        'audioSource': concatenatingSource('root', <Map<String, dynamic>>[], <int>[]),
+        'audioSource':
+            concatenatingSource('root', <Map<String, dynamic>>[], <int>[]),
       });
       expect(res!['duration'], isNull);
       expect(player.sourceSet, isTrue);
@@ -284,9 +289,8 @@ void main() {
     test('play stays pending until pause, then clears the playing intent',
         () async {
       var completed = false;
-      final play = channel
-          .invokeMethod<void>('play', <String, dynamic>{})
-          .then((_) => completed = true);
+      final play = channel.invokeMethod<void>(
+          'play', <String, dynamic>{}).then((_) => completed = true);
 
       expect(player.playing, isTrue);
       await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -305,15 +309,13 @@ void main() {
       // once - "ignore the second play request since it is already playing" -
       // and the first stays bound to the playback lifecycle.
       var firstCompleted = false;
-      final first = channel
-          .invokeMethod<void>('play', <String, dynamic>{})
-          .then((_) => firstCompleted = true);
+      final first = channel.invokeMethod<void>(
+          'play', <String, dynamic>{}).then((_) => firstCompleted = true);
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(firstCompleted, isFalse);
 
-      await channel
-          .invokeMethod<void>('play', <String, dynamic>{})
-          .timeout(const Duration(seconds: 1));
+      await channel.invokeMethod<void>(
+          'play', <String, dynamic>{}).timeout(const Duration(seconds: 1));
       expect(player.playing, isTrue);
       expect(firstCompleted, isFalse,
           reason: 'the first play must stay pending until pause or end');
@@ -334,9 +336,8 @@ void main() {
           MethodChannel('com.ryanheise.just_audio.methods.$freshId');
 
       var completed = false;
-      final play = freshChannel
-          .invokeMethod<void>('play', <String, dynamic>{})
-          .then((_) => completed = true);
+      final play = freshChannel.invokeMethod<void>(
+          'play', <String, dynamic>{}).then((_) => completed = true);
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(completed, isFalse,
           reason: 'a source-less play must not resolve before a load');
@@ -360,9 +361,8 @@ void main() {
         'audioSource':
             concatenatingSource('root', <Map<String, dynamic>>[], <int>[]),
       });
-      await emptyChannel
-          .invokeMethod<void>('play', <String, dynamic>{})
-          .timeout(const Duration(seconds: 1));
+      await emptyChannel.invokeMethod<void>(
+          'play', <String, dynamic>{}).timeout(const Duration(seconds: 1));
     });
 
     test('stop clears the playing intent and rewinds', () async {
@@ -409,7 +409,8 @@ void main() {
       }
     });
 
-    test('a seek landing while the item is still opening defers the newest position',
+    test(
+        'a seek landing while the item is still opening defers the newest position',
         () async {
       // The native engine applies a deferred seek in Opened(), when the media
       // actually opens. A later seek that arrives before that must overwrite
@@ -442,7 +443,8 @@ void main() {
 
     test('rejects a negative position', () async {
       await expectLater(
-        channel.invokeMethod<void>('seek', <String, dynamic>{'position': -1000}),
+        channel
+            .invokeMethod<void>('seek', <String, dynamic>{'position': -1000}),
         argumentError,
       );
     });
@@ -498,9 +500,16 @@ void main() {
 
     test('setVolume rejects out-of-range, non-finite and non-numeric values',
         () async {
-      for (final volume in <Object>[-0.1, 1.1, double.nan, double.infinity, 'loud']) {
+      for (final volume in <Object>[
+        -0.1,
+        1.1,
+        double.nan,
+        double.infinity,
+        'loud'
+      ]) {
         await expectLater(
-          channel.invokeMethod<void>('setVolume', <String, dynamic>{'volume': volume}),
+          channel.invokeMethod<void>(
+              'setVolume', <String, dynamic>{'volume': volume}),
           argumentError,
         );
       }
@@ -508,7 +517,8 @@ void main() {
 
     test('setSpeed accepts positive rates', () async {
       for (final speed in <double>[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]) {
-        await channel.invokeMethod<void>('setSpeed', <String, dynamic>{'speed': speed});
+        await channel
+            .invokeMethod<void>('setSpeed', <String, dynamic>{'speed': speed});
         expect(player.speed, speed);
       }
     });
@@ -516,14 +526,16 @@ void main() {
     test('setSpeed rejects zero, negative and non-finite rates', () async {
       for (final speed in <Object>[0.0, -1.0, double.nan, 'fast']) {
         await expectLater(
-          channel.invokeMethod<void>('setSpeed', <String, dynamic>{'speed': speed}),
+          channel.invokeMethod<void>(
+              'setSpeed', <String, dynamic>{'speed': speed}),
           argumentError,
         );
       }
     });
 
     test('setPitch succeeds only for the neutral value', () async {
-      await channel.invokeMethod<void>('setPitch', <String, dynamic>{'pitch': 1.0});
+      await channel
+          .invokeMethod<void>('setPitch', <String, dynamic>{'pitch': 1.0});
       await expectLater(
         channel.invokeMethod<void>('setPitch', <String, dynamic>{'pitch': 1.5}),
         throwsA(isA<PlatformException>()
@@ -553,7 +565,8 @@ void main() {
   group('loop and shuffle modes', () {
     test('setLoopMode accepts off, one and all', () async {
       for (final mode in <int>[0, 1, 2]) {
-        await channel.invokeMethod<void>('setLoopMode', <String, dynamic>{'loopMode': mode});
+        await channel.invokeMethod<void>(
+            'setLoopMode', <String, dynamic>{'loopMode': mode});
         expect(player.loopMode, mode);
       }
     });
@@ -561,7 +574,8 @@ void main() {
     test('setLoopMode rejects any other value', () async {
       for (final mode in <int>[-1, 3, 7]) {
         await expectLater(
-          channel.invokeMethod<void>('setLoopMode', <String, dynamic>{'loopMode': mode}),
+          channel.invokeMethod<void>(
+              'setLoopMode', <String, dynamic>{'loopMode': mode}),
           argumentError,
         );
       }
@@ -569,8 +583,8 @@ void main() {
 
     test('setShuffleMode accepts off and all', () async {
       for (final mode in <int>[0, 1]) {
-        await channel
-            .invokeMethod<void>('setShuffleMode', <String, dynamic>{'shuffleMode': mode});
+        await channel.invokeMethod<void>(
+            'setShuffleMode', <String, dynamic>{'shuffleMode': mode});
         expect(player.shuffleMode, mode);
       }
     });
@@ -739,8 +753,8 @@ void main() {
       // call is reported as disposed rather than silently succeeding.
       await expectLater(
         channel.invokeMethod<void>('dispose', <String, dynamic>{}),
-        throwsA(isA<PlatformException>()
-            .having((e) => e.code, 'code', 'disposed')),
+        throwsA(
+            isA<PlatformException>().having((e) => e.code, 'code', 'disposed')),
       );
       expect(player.isDisposed, isTrue);
     });
@@ -750,8 +764,8 @@ void main() {
       await channel.invokeMethod<void>('dispose', <String, dynamic>{});
       await expectLater(
         channel.invokeMethod<void>('play', <String, dynamic>{}),
-        throwsA(isA<PlatformException>()
-            .having((e) => e.code, 'code', 'disposed')),
+        throwsA(
+            isA<PlatformException>().having((e) => e.code, 'code', 'disposed')),
       );
     });
   });
